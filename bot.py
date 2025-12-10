@@ -5,16 +5,14 @@ import datetime
 import os
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-import yt_dlp
-from discord import FFmpegPCMAudio
 
 # 讀取 .env（本機用；Railway 會用環境變數）
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 CHANNEL_ID_STR = os.getenv("CHANNEL_ID")
-SEND_HOUR = int(os.getenv("SEND_HOUR", "20"))
-SEND_MINUTE = int(os.getenv("SEND_MINUTE", "0"))
+SEND_HOUR = int(os.getenv("SEND_HOUR", "20"))     # 預設 20:00
+SEND_MINUTE = int(os.getenv("SEND_MINUTE", "0"))  # 預設 00 分
 
 if CHANNEL_ID_STR is None:
     raise RuntimeError("CHANNEL_ID 環境變數沒有設定！")
@@ -35,17 +33,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 task_started = False
 
-# yt-dlp / ffmpeg 設定（目前沒用到，但保留也沒關係）
-YDL_OPTS = {
-    "format": "bestaudio/best",
-    "noplaylist": True,
-    "quiet": True,
-}
-FFMPEG_OPTS = {
-    "before_options": "-nostdin",
-    "options": "-vn",
-}
-
 
 async def countdown_task():
     await bot.wait_until_ready()
@@ -63,16 +50,17 @@ async def countdown_task():
             hour=SEND_HOUR, minute=SEND_MINUTE, second=0, microsecond=0
         )
 
+        # 決定下一次發訊息時間（今天或明天）
         if now >= today_send:
             next_send = today_send + datetime.timedelta(days=1)
         else:
             next_send = today_send
-        next_send = today_send
 
         wait_seconds = (next_send - now).total_seconds()
         print(f"下一次發訊息時間（Asia/Taipei）：{next_send}（等待 {wait_seconds:.0f} 秒）")
         await asyncio.sleep(wait_seconds)
 
+        # 重新取台北時間避免跨日問題
         now = datetime.datetime.now(TZ)
         today = now.date()
         diff = (EXAM_END - today).days
@@ -102,7 +90,7 @@ async def on_ready():
 
 
 # =========================
-#  指令：!join 讓 Bot 進語音
+#  !join：讓 Bot 進語音
 # =========================
 @bot.command(name="join")
 async def join_voice(ctx: commands.Context):
@@ -129,9 +117,9 @@ async def join_voice(ctx: commands.Context):
         await ctx.send(f"我已經加入：{channel.name} 頻道陪你囉~")
 
 
-# ==========================================
-#  !bye 指令：離開語音頻道
-# ==========================================
+# =========================
+#  !bye：離開語音
+# =========================
 @bot.command(name="bye")
 async def leave_voice(ctx: commands.Context):
     voice_client = ctx.voice_client
@@ -144,9 +132,9 @@ async def leave_voice(ctx: commands.Context):
     await ctx.send("下次歡迎再來找我唷~")
 
 
-# ==========================================
-#  !clear 指令：清除訊息
-# ==========================================
+# =========================
+#  !clear：清除訊息
+# =========================
 @bot.command(name="clear")
 @commands.has_permissions(manage_messages=True)
 async def clear_messages(ctx: commands.Context, amount: int):
@@ -158,22 +146,20 @@ async def clear_messages(ctx: commands.Context, amount: int):
         await ctx.send("請輸入大於 0 的數量喔！")
         return
 
-    # 多 +1 是把這次 !clear 指令本身也一起刪掉
+    # +1 是把這次 !clear 指令本身也一起刪掉
     deleted = await ctx.channel.purge(limit=amount + 1)
     count = len(deleted) - 1  # 扣掉指令那一則
     msg = await ctx.send(f"🧹 已清除 {count} 則訊息")
-    # 幾秒後自動把這則提示刪掉，避免又堆訊息
     await asyncio.sleep(3)
     await msg.delete()
 
 
 @clear_messages.error
 async def clear_messages_error(ctx: commands.Context, error):
-    # 沒權限時的提示
+    # 沒權限
     if isinstance(error, commands.MissingPermissions):
-        await ctx.send("你沒有管理訊息的權限，不能使用這個指令喔！")
+        await ctx.send("你沒有**管理訊息**的權限，不能使用這個指令！")
     else:
-        # 其他錯誤就印在 console，方便 debug
         print(f"clear 指令錯誤：{error}")
 
 
