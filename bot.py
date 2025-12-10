@@ -35,7 +35,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 task_started = False
 
-# yt-dlp / ffmpeg 設定
+# yt-dlp / ffmpeg 設定（目前沒用到，但保留也沒關係）
 YDL_OPTS = {
     "format": "bestaudio/best",
     "noplaylist": True,
@@ -66,7 +66,7 @@ async def countdown_task():
         if now >= today_send:
             next_send = today_send + datetime.timedelta(days=1)
         else:
-            today_send = today_send
+            next_send = today_send
         next_send = today_send
 
         wait_seconds = (next_send - now).total_seconds()
@@ -122,14 +122,15 @@ async def join_voice(ctx: commands.Context):
             return
         # 移動到新的語音頻道
         await ctx.voice_client.move_to(channel)
-        await ctx.send(f"跟隨你到：{channel.name}頻道囉~")
+        await ctx.send(f"跟隨你到：{channel.name} 頻道囉~")
     else:
         # 尚未連接任何語音頻道 → 加入
         await channel.connect()
-        await ctx.send(f"我已經加入：{channel.name}頻道陪你囉~")
+        await ctx.send(f"我已經加入：{channel.name} 頻道陪你囉~")
+
 
 # ==========================================
-#  !leave 指令：離開語音頻道
+#  !bye 指令：離開語音頻道
 # ==========================================
 @bot.command(name="bye")
 async def leave_voice(ctx: commands.Context):
@@ -141,6 +142,39 @@ async def leave_voice(ctx: commands.Context):
 
     await voice_client.disconnect()
     await ctx.send("下次歡迎再來找我唷~")
+
+
+# ==========================================
+#  !clear 指令：清除訊息
+# ==========================================
+@bot.command(name="clear")
+@commands.has_permissions(manage_messages=True)
+async def clear_messages(ctx: commands.Context, amount: int):
+    """
+    清除當前頻道最近 amount 則訊息（包含這次指令）
+    用法：!clear 10
+    """
+    if amount <= 0:
+        await ctx.send("請輸入大於 0 的數量喔！")
+        return
+
+    # 多 +1 是把這次 !clear 指令本身也一起刪掉
+    deleted = await ctx.channel.purge(limit=amount + 1)
+    count = len(deleted) - 1  # 扣掉指令那一則
+    msg = await ctx.send(f"🧹 已清除 {count} 則訊息")
+    # 幾秒後自動把這則提示刪掉，避免又堆訊息
+    await asyncio.sleep(3)
+    await msg.delete()
+
+
+@clear_messages.error
+async def clear_messages_error(ctx: commands.Context, error):
+    # 沒權限時的提示
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("你沒有管理訊息的權限，不能使用這個指令喔！")
+    else:
+        # 其他錯誤就印在 console，方便 debug
+        print(f"clear 指令錯誤：{error}")
 
 
 bot.run(TOKEN)
