@@ -101,7 +101,7 @@ async def join_voice(ctx: commands.Context):
     voice_state = ctx.author.voice
 
     if voice_state is None or voice_state.channel is None:
-        await ctx.send("你要先進入一個語音頻道，我才能跟上去喔！")
+        await ctx.send("要先進入一個語音頻道，我才能跟上去唷！")
         return
 
     channel = voice_state.channel
@@ -113,14 +113,26 @@ async def join_voice(ctx: commands.Context):
             return
         # 移動到新的語音頻道
         await ctx.voice_client.move_to(channel)
-        await ctx.send(f"我已經移動到語音頻道：{channel.name}")
+        await ctx.send(f"跟隨你到：{channel.name}頻道囉~")
     else:
         # 尚未連接任何語音頻道 → 加入
         await channel.connect()
-        await ctx.send(f"我已經加入語音頻道：{channel.name}")
+        await ctx.send(f"我已經加入：{channel.name}頻道陪你囉~")
 
+# ==========================================
+#  !leave 指令：離開語音頻道
+# ==========================================
+@bot.command(name="leave")
+async def leave_voice(ctx: commands.Context):
+    voice_client = ctx.voice_client
 
-# （可選）你之後想加離開語音，可以另外加一個 !leave 指令
+    if voice_client is None:
+        await ctx.send("我現在沒有在任何語音頻道裡唷！")
+        return
+
+    await voice_client.disconnect()
+    await ctx.send("下次歡迎再來找我唷~")
+
 
 
 bot.run(TOKEN)
