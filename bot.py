@@ -131,7 +131,7 @@ async def join_voice(ctx: commands.Context):
 # ==========================================
 #  !leave 指令：離開語音頻道
 # ==========================================
-@bot.command(name="leave")
+@bot.command(name="bye")
 async def leave_voice(ctx: commands.Context):
     voice_client = ctx.voice_client
 
@@ -141,84 +141,6 @@ async def leave_voice(ctx: commands.Context):
 
     await voice_client.disconnect()
     await ctx.send("下次歡迎再來找我唷~")
-
-
-# ==========================================
-#  音樂：!play / !pause / !resume / !stop
-# ==========================================
-@bot.command(name="play")
-async def play_music(ctx: commands.Context, *, url: str):
-    """播放 YouTube 音樂：!play <YouTube網址>"""
-    voice_state = ctx.author.voice
-    if voice_state is None or voice_state.channel is None:
-        await ctx.send("你要先進入一個語音頻道，我才能幫你播放音樂唷！")
-        return
-
-    channel = voice_state.channel
-    voice_client = ctx.voice_client
-
-    # 讓 Bot 加入 / 移動到使用者所在的語音頻道
-    if voice_client is None:
-        voice_client = await channel.connect()
-    elif voice_client.channel.id != channel.id:
-        await voice_client.move_to(channel)
-
-    # 如果已經在播放，就先切歌
-    if voice_client.is_playing() or voice_client.is_paused():
-        voice_client.stop()
-
-    await ctx.send("🎵 正在載入音樂，請稍候…")
-
-    try:
-        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-            info = ydl.extract_info(url, download=False)
-            audio_url = info["url"]
-            title = info.get("title", "音樂")
-    except Exception as e:
-        await ctx.send(f"讀取 YouTube 資料時發生錯誤：{e}")
-        return
-
-    source = FFmpegPCMAudio(audio_url, **FFMPEG_OPTS)
-
-    def after_play(err):
-        if err:
-            print(f"音樂播放錯誤：{err}")
-
-    voice_client.play(source, after=after_play)
-    await ctx.send(f"▶️ 正在播放：**{title}**")
-
-
-@bot.command(name="pause")
-async def pause_music(ctx: commands.Context):
-    """暫停音樂"""
-    vc = ctx.voice_client
-    if vc and vc.is_playing():
-        vc.pause()
-        await ctx.send("⏸ 已暫停播放。")
-    else:
-        await ctx.send("目前沒有正在播放的音樂唷！")
-
-
-@bot.command(name="resume")
-async def resume_music(ctx: commands.Context):
-    """恢復播放"""
-    vc = ctx.voice_client
-    if vc and vc.is_paused():
-        vc.resume()
-        await ctx.send("▶️ 繼續播放。")
-    else:
-        await ctx.send("目前沒有被暫停的音樂唷！")
-
-
-@bot.command(name="stop")
-async def stop_music(ctx: commands.Context):
-    """停止播放"""
-    vc = ctx.voice_client
-    if vc and (vc.is_playing() or vc.is_paused()):
-        vc.stop()
-        await ctx.send("⏹ 已停止播放。")
-    else:
-        await ctx.send("目前沒有正在播放的音樂唷！")
 
 
 bot.run(TOKEN)
