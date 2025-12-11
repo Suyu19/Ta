@@ -5,6 +5,18 @@ import datetime
 import os
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+import yt_dlp
+
+YDL_OPTIONS = {
+    "format": "bestaudio/best",
+    "noplaylist": True,
+    "quiet": True,
+}
+
+FFMPEG_OPTIONS = {
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn",
+}
 
 # 讀取 .env（本機用；Railway 會用環境變數）
 load_dotenv()
@@ -233,13 +245,84 @@ async def play_audio(ctx: commands.Context):
         # audio_source = PCMVolumeTransformer(audio_source, volume=1.0)
 
         voice_client.play(audio_source, after=after_playing)
-        await ctx.send("已開始在語音頻道播放，如果還是沒聲音，等等錯誤會顯示在這裡或 Railway Logs。")
+        await ctx.send("我開始演奏囉！")
     except Exception as e:
         # 關鍵：把錯誤丟回 DC，方便你看到
         await ctx.send(f"播放時發生錯誤：`{e}`\n（也可以去 Railway Logs 看更詳細的訊息）")
         # 同時在主機 log 印出詳細內容
         import traceback
         traceback.print_exc()
+
+# =========================
+#  !yt：播放 YouTube 連結的音樂
+# =========================
+@bot.command(name="yt")
+async def play_youtube(ctx: commands.Context, url: str):
+    """
+    從 YouTube 播放音樂
+    用法：!yt <YouTube網址>
+    例如：!yt https://www.youtube.com/watch?v=xxxxxxx
+    """
+
+    # 1. 確認使用者有在語音頻道
+    voice_state = ctx.author.voice
+    if voice_state is None or voice_state.channel is None:
+        await ctx.send("你要先進入一個語音頻道，我才能幫你播 YouTube 唷！")
+        return
+
+    # 2. 讓 Bot 加入或移動到使用者的語音頻道
+    voice_client = ctx.voice_client
+    channel = voice_state.channel
+
+    if voice_client is None:
+        voice_client = await channel.connect()
+        await ctx.send(f"我已經加入：{channel.name} 頻道囉，準備幫你播 YouTube～")
+    else:
+        if voice_client.channel.id != channel.id:
+            await voice_client.move_to(channel)
+            await ctx.send(f"我換到：{channel.name} 頻道囉～")
+
+    # 3. 如果正在播東西，先停掉
+    if voice_client.is_playing():
+        voice_client.stop()
+
+    await ctx.send("🔎 正在從 YouTube 取得音訊串流，請稍等幾秒…")
+
+    # 4. 用 yt_dlp 取得音訊串流 URL（在執行緒池裡避免堵住 event loop）
+    loop = asyncio.get_running_loop()
+
+    def ytdlp_extract():
+        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    try:
+        info = await loop.run_in_executor(None, ytdlp_extract)
+    except Exception as e:
+        await ctx.send(f"取得 YouTube 音訊時發生錯誤：`{e}`")
+        return
+
+    # 有些影片在 'entries' 裡（播放清單），只取第一個
+    if "entries" in info:
+        info = info["entries"][0]
+
+    stream_url = info.get("url")
+    title = info.get("title", "Unknown Title")
+
+    if not stream_url:
+        await ctx.send("找不到可以播放的音訊串流 QQ")
+        return
+
+    # 5. 使用 FFmpeg 播放串流
+    def after_playing(error):
+        if error:
+            print(f"播放 YouTube 時發生錯誤：{error}")
+
+    try:
+        audio_source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
+        voice_client.play(audio_source, after=after_playing)
+        await ctx.send(f"▶ 正在播放：**{title}**")
+    except Exception as e:
+        await ctx.send(f"播放時發生錯誤：`{e}`")
 
 
 
