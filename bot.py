@@ -165,7 +165,7 @@ async def clear_messages_error(ctx: commands.Context, error):
 
 
 # =========================
-#  !play：播放上傳的 mp3 檔
+#  !play：播放上傳的 mp3 檔（加強版，會顯示錯誤）
 # =========================
 @bot.command(name="play")
 async def play_audio(ctx: commands.Context):
@@ -207,13 +207,13 @@ async def play_audio(ctx: commands.Context):
     # 4. 把 mp3 存成暫存檔
     temp_filename = f"temp_{attachment.id}.mp3"
     await attachment.save(temp_filename)
-    await ctx.send(f"收到檔案 `{attachment.filename}`，開始播放～")
+    await ctx.send(f"收到檔案 `{attachment.filename}`，準備播放～")
 
     # 5. 如果正在播東西，先停掉
     if voice_client.is_playing():
         voice_client.stop()
 
-    # 6. 使用 FFmpeg 播放
+    # 6. 使用 FFmpeg 播放，並加上錯誤處理
     def after_playing(error):
         # 播放結束後刪掉暫存檔
         try:
@@ -225,8 +225,21 @@ async def play_audio(ctx: commands.Context):
         if error:
             print(f"播放時發生錯誤：{error}")
 
-    audio_source = discord.FFmpegPCMAudio(temp_filename)
-    voice_client.play(audio_source, after=after_playing)
+    try:
+        # 這裡如果 ffmpeg 沒裝好 / lib 有問題，會直接丟例外
+        audio_source = discord.FFmpegPCMAudio(temp_filename)
+        # 可選：如果覺得音量太小，可以包一層音量控制
+        # from discord import PCMVolumeTransformer
+        # audio_source = PCMVolumeTransformer(audio_source, volume=1.0)
+
+        voice_client.play(audio_source, after=after_playing)
+        await ctx.send("已開始在語音頻道播放，如果還是沒聲音，等等錯誤會顯示在這裡或 Railway Logs。")
+    except Exception as e:
+        # 關鍵：把錯誤丟回 DC，方便你看到
+        await ctx.send(f"播放時發生錯誤：`{e}`\n（也可以去 Railway Logs 看更詳細的訊息）")
+        # 同時在主機 log 印出詳細內容
+        import traceback
+        traceback.print_exc()
 
 
 
