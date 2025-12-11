@@ -1,0 +1,5 @@
+# nixpacks.toml
+# 告訴 Railway / Nixpacks：在環境裡安裝 ffmpeg
+
+[phases.setup]
+nixPkgs = ["ffmpeg"]
