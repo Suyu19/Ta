@@ -140,7 +140,7 @@ async def leave_voice(ctx: commands.Context):
 async def clear_messages(ctx: commands.Context, amount: int):
     """
     清除當前頻道最近 amount 則訊息（包含這次指令）
-    用法：!clear 10
+    用法：!clear (數字)
     """
     if amount <= 0:
         await ctx.send("請輸入大於 0 的數量喔！")
@@ -161,6 +161,73 @@ async def clear_messages_error(ctx: commands.Context, error):
         await ctx.send("你沒有**管理訊息**的權限，不能使用這個指令！")
     else:
         print(f"clear 指令錯誤：{error}")
+
+
+
+# =========================
+#  !play：播放上傳的 mp3 檔
+# =========================
+@bot.command(name="play")
+async def play_audio(ctx: commands.Context):
+    """
+    播放使用者這則訊息附帶的 mp3 檔
+    用法：在文字頻道傳送訊息時附上 mp3 檔，並輸入：!play
+    """
+
+    # 1. 確認使用者有在語音頻道
+    voice_state = ctx.author.voice
+    if voice_state is None or voice_state.channel is None:
+        await ctx.send("你要先進入一個語音頻道，我才能幫你播音樂唷！")
+        return
+
+    # 2. 讓 Bot 加入或移動到使用者的語音頻道
+    voice_client = ctx.voice_client
+    channel = voice_state.channel
+
+    if voice_client is None:
+        voice_client = await channel.connect()
+        await ctx.send(f"我已經加入：{channel.name} 頻道囉，準備幫你播音樂～")
+    else:
+        if voice_client.channel.id != channel.id:
+            await voice_client.move_to(channel)
+            await ctx.send(f"我換到：{channel.name} 頻道囉～")
+
+    # 3. 檢查這則訊息有沒有附檔
+    if not ctx.message.attachments:
+        await ctx.send("請把 mp3 檔案當作**附件**一起傳給我，再使用 `!play` 喔～")
+        return
+
+    attachment = ctx.message.attachments[0]
+
+    # 只接受 mp3
+    if not attachment.filename.lower().endswith(".mp3"):
+        await ctx.send("目前我只支援 `.mp3` 檔案喔 QQ")
+        return
+
+    # 4. 把 mp3 存成暫存檔
+    temp_filename = f"temp_{attachment.id}.mp3"
+    await attachment.save(temp_filename)
+    await ctx.send(f"收到檔案 `{attachment.filename}`，開始播放～")
+
+    # 5. 如果正在播東西，先停掉
+    if voice_client.is_playing():
+        voice_client.stop()
+
+    # 6. 使用 FFmpeg 播放
+    def after_playing(error):
+        # 播放結束後刪掉暫存檔
+        try:
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+        except Exception as e:
+            print(f"刪除暫存檔失敗：{e}")
+
+        if error:
+            print(f"播放時發生錯誤：{error}")
+
+    audio_source = discord.FFmpegPCMAudio(temp_filename)
+    voice_client.play(audio_source, after=after_playing)
+
 
 
 bot.run(TOKEN)
