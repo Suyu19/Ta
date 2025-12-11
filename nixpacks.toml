@@ -1,5 +1,9 @@
 # nixpacks.toml
-# 告訴 Railway / Nixpacks：在環境裡安裝 ffmpeg
+# 給 Railway / Nixpacks 用來安裝 ffmpeg
 
 [phases.setup]
-nixPkgs = ["ffmpeg"]
+# 從 Nix 裝 ffmpeg
+nixPkgs = ["...", "ffmpeg"]
+
+# 如果是用 apt 的環境，也順便從 apt 裝 ffmpeg
+aptPkgs = ["...", "ffmpeg"]
