@@ -6,6 +6,8 @@ import os
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import yt_dlp
+import datetime
+
 
 async def play_next(ctx):
     global is_playing
@@ -125,6 +127,34 @@ async def countdown_task():
             msg = f"📘 期末考倒數：還剩 **{diff} 天**！（考試第一天：1/05）"
 
         await channel.send(msg)
+
+@bot.command(name="exam")
+async def exam_countdown(ctx: commands.Context):
+    today = datetime.date.today()
+
+    if today < EXAM_START:
+        days = (EXAM_START - today).days
+        msg = f"📘 距離期末考第一天（1/05）還有 **{days} 天**！加油～💪"
+
+    elif today == EXAM_START:
+        msg = "📘 今天是期末考第一天（1/05）！Fight！！🔥"
+
+    elif EXAM_START < today < EXAM_END:
+        day_no = (today - EXAM_START).days + 1
+        left = (EXAM_END - today).days
+        msg = (
+            f"📘 期末考進行中（第 **{day_no} 天**）！\n"
+            f"⏳ 距離最後一天（1/09）還有 **{left} 天**，"
+        )
+
+    elif today == EXAM_END:
+        msg = "📘 今天是期末考最後一天（1/09） 解脫了！"
+
+    else:
+        days_after = (today - EXAM_END).days
+        msg = f"🎉 期末考已結束 **{days_after} 天**，辛苦了～"
+
+    await ctx.send(msg)
 
 
 @bot.event
