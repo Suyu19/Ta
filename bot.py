@@ -56,14 +56,15 @@ CHANNEL_ID = int(CHANNEL_ID_STR)
 TZ = ZoneInfo("Asia/Taipei")
 
 # 期末考期間
-EXAM_START = datetime.date(2026, 1, 5)
-EXAM_END = datetime.date(2026, 1, 10)
+EXAM_START = datetime.date(2026, 1, 5)  # 考試第一天
+EXAM_END   = datetime.date(2026, 1, 9)  # 考試最後一天
 
 # Intents（要可讀取訊息內容才能用指令）
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
 
 music_queue = []   # 儲存 { 'source': audio_source, 'title': 標題 } 的列表
 is_playing = False
@@ -102,17 +103,26 @@ async def countdown_task():
         today = now.date()
         diff = (EXAM_END - today).days
 
+        # 計算與考試第一天的差距（倒數用）
+        diff = (EXAM_START - today).days
+
         # 訊息邏輯
         if today == EXAM_START:
-            msg = "(1/05) 今天是期末考第一天！Fight！！"
+            msg = "(1/05) 今天是期末考第一天！Fight！！💪📚"
+
         elif EXAM_START < today < EXAM_END:
-            msg = f"({today.month}/{today.day}) 期末考進行中！加油！！"
+            msg = f"({today.month}/{today.day}) 期末考進行中！加油！！🔥"
+
         elif today == EXAM_END:
-            msg = "(1/10) 今天是期末考的最後一天！（2026-01-10）加油！"
+            msg = "(1/09) 今天是期末考最後一天！撐住！！🎯"
+
         elif today > EXAM_END:
-            msg = f"📘 期末考已經結束 {abs(diff)} 天，辛苦了～"
+            days_after = (today - EXAM_END).days
+            msg = f"📘 期末考已經結束 {days_after} 天，辛苦了～🎉"
+
         else:
-            msg = f"📘 期末考倒數：還剩 **{diff} 天**！（結束日：{EXAM_END}）"
+            # 考前倒數（倒數到 1/05）
+            msg = f"📘 期末考倒數：還剩 **{diff} 天**！（考試第一天：1/05）"
 
         await channel.send(msg)
 
@@ -124,6 +134,22 @@ async def on_ready():
     if not task_started:
         asyncio.create_task(countdown_task())
         task_started = True
+
+@bot.command(name="help")
+async def custom_help(ctx: commands.Context):
+    msg = (
+        "!後：\n"
+        "  help  顯示所有可用功能指令\n"
+        "  join   加入語音頻道陪你\n"
+        "  bye   離開語音頻道\n\n"
+        "  clear （數字） 清除當前頻道最近 X 則訊息\n\n"
+        "  play  播放這則訊息附帶的 mp3 檔\n"
+        "  yt      後接網址播放音樂\n"
+        "  skip  跳到清單下一首\n"
+        "  stop  停止所有音樂播放"
+    )
+    await ctx.send(msg)
+
 
 
 # =========================
