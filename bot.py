@@ -134,7 +134,7 @@ async def exam_countdown(ctx: commands.Context):
 
     if today < EXAM_START:
         days = (EXAM_START - today).days
-        msg = f"📘 距離期末考第一天（1/05）還有 **{days} 天**！加油～💪"
+        msg = f"📘 距離期末考第一天（1/05）還有 **{days} 天**！"
 
     elif today == EXAM_START:
         msg = "📘 今天是期末考第一天（1/05）！Fight！！🔥"
