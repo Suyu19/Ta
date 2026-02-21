@@ -39,9 +39,9 @@ CHANNEL_ID = int(CHANNEL_ID_STR)
 # 使用 Asia/Taipei 時區
 TZ = ZoneInfo("Asia/Taipei")
 
-# 期末考期間
-EXAM_START = datetime.date(2026, 1, 5)  # 考試第一天
-EXAM_END   = datetime.date(2026, 1, 9)  # 考試最後一天
+# 期中考期間
+EXAM_START = datetime.date(2026, 4, 20)  # 考試第一天
+EXAM_END   = datetime.date(2026, 4, 24)  # 考試最後一天
 
 # Intents（要可讀取訊息內容才能用指令）
 intents = discord.Intents.default()
@@ -236,17 +236,21 @@ async def countdown_task():
         today = now.date()
 
         if today == EXAM_START:
-            msg = "(1/05) 今天是期末考第一天！Fight！！💪📚"
+            msg = "(4/20) 今天是期中考第一天！Fight！！💪📚"
+
         elif EXAM_START < today < EXAM_END:
-            msg = f"({today.month}/{today.day}) 期末考進行中！加油！！🔥"
+            msg = f"({today.month}/{today.day}) 期中考進行中！加油！！🔥"
+
         elif today == EXAM_END:
-            msg = "(1/09) 今天是期末考最後一天！撐住！！🎯"
+            msg = "(4/24) 今天是期中考最後一天！撐住！！🎯"
+
         elif today > EXAM_END:
             days_after = (today - EXAM_END).days
-            msg = f"📘 期末考已經結束 {days_after} 天，辛苦了～🎉"
+            msg = f"📘 期中考已經結束 {days_after} 天，辛苦了～🎉"
+
         else:
             diff = (EXAM_START - today).days
-            msg = f"📘 期末考倒數：還剩 **{diff} 天**！（考試第一天：1/05）"
+            msg = f"📘 期中考倒數：還剩 **{diff} 天**！（考試第一天：4/20）"
 
         await channel.send(msg)
 
@@ -270,18 +274,25 @@ async def exam_countdown(ctx: commands.Context):
 
     if today < EXAM_START:
         days = (EXAM_START - today).days
-        msg = f"📘 距離期末考第一天（1/05）還有 **{days} 天**！"
+        msg = f"📘 距離期中考第一天（4/20）還有 **{days} 天**！"
+
     elif today == EXAM_START:
-        msg = "📘 今天是期末考第一天（1/05）！Fight！！🔥"
+        msg = "📘 今天是期中考第一天（4/20）！Fight！！🔥"
+
     elif EXAM_START < today < EXAM_END:
         day_no = (today - EXAM_START).days + 1
         left = (EXAM_END - today).days
-        msg = f"📘 期末考進行中（第 **{day_no} 天**）！\n⏳ 距離最後一天（1/09）還有 **{left} 天**"
+        msg = (
+            f"📘 期中考進行中（第 **{day_no} 天**）！\n"
+            f"⏳ 距離最後一天（4/24）還有 **{left} 天**"
+        )
+
     elif today == EXAM_END:
-        msg = "📘 今天是期末考最後一天（1/09） 解脫了！"
+        msg = "📘 今天是期中考最後一天（4/24） 解脫了！"
+
     else:
         days_after = (today - EXAM_END).days
-        msg = f"🎉 期末考已結束 **{days_after} 天**，辛苦了～"
+        msg = f"🎉 期中考已結束 **{days_after} 天**，辛苦了～"
 
     await ctx.send(msg)
 
