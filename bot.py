@@ -1,3 +1,4 @@
+
 import discord
 from discord.ext import commands
 import asyncio
@@ -9,12 +10,22 @@ import yt_dlp
 import base64
 import tempfile
 
+print("BOOT VERSION: 2026-02-21-ytcookies-debug-1", flush=True)
+
 # =========================
 # 基本設定
 # =========================
 
 # 讀取 .env（本機用；Railway 會用環境變數）
 load_dotenv()
+
+print("YT_COOKIES_B64 exists:", os.getenv("YT_COOKIES_B64") is not None, flush=True)
+if os.getenv("YT_COOKIES_B64"):
+    print("YT_COOKIES_B64 length:", len(os.getenv("YT_COOKIES_B64")), flush=True)
+
+print("YT_COOKIES_B64 exists:", os.getenv("YT_COOKIES_B64") is not None)
+if os.getenv("YT_COOKIES_B64"):
+    print("YT_COOKIES_B64 length:", len(os.getenv("YT_COOKIES_B64")))
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 CHANNEL_ID_STR = os.getenv("CHANNEL_ID")
