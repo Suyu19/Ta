@@ -644,8 +644,8 @@ async def custom_help(ctx: commands.Context):
         "  stop  停止所有音樂播放\n\n"
         "  sleep 提前回報睡覺情況\n "
         "  sleeptest   立刻發出睡覺回報按鈕（測試）\n"
-        "  sleepcheck  立刻做一次未回報檢查（測試）"
-        "  nosleep +原因直接打\n"
+        "  sleepcheck  立刻做一次未回報檢查（測試）\n"
+        "  nosleep +原因直接打"
     )
     await ctx.send(msg)
 
