@@ -1,4 +1,3 @@
-
 import discord
 from discord.ext import commands
 import asyncio
@@ -10,31 +9,33 @@ import yt_dlp
 import base64
 import tempfile
 
-print("BOOT VERSION: 2026-02-21-ytcookies-debug-1", flush=True)
+print("BOOT VERSION: 2026-03-01-sleepcheck-1", flush=True)
 
 # =========================
 # 基本設定
 # =========================
 
-# 讀取 .env（本機用；Railway 會用環境變數）
 load_dotenv()
 
-print("YT_COOKIES_B64 exists:", os.getenv("YT_COOKIES_B64") is not None, flush=True)
-if os.getenv("YT_COOKIES_B64"):
-    print("YT_COOKIES_B64 length:", len(os.getenv("YT_COOKIES_B64")), flush=True)
-
-print("YT_COOKIES_B64 exists:", os.getenv("YT_COOKIES_B64") is not None)
-if os.getenv("YT_COOKIES_B64"):
-    print("YT_COOKIES_B64 length:", len(os.getenv("YT_COOKIES_B64")))
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 CHANNEL_ID_STR = os.getenv("CHANNEL_ID")
 SEND_HOUR = int(os.getenv("SEND_HOUR", "20"))     # 預設 20:00
 SEND_MINUTE = int(os.getenv("SEND_MINUTE", "0"))  # 預設 00 分
 
+# ✅ 新增：睡覺提醒頻道
+SLEEP_CHANNEL_ID_STR = os.getenv("SLEEP_CHANNEL_ID")
+
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN 環境變數沒有設定！")
+
 if CHANNEL_ID_STR is None:
     raise RuntimeError("CHANNEL_ID 環境變數沒有設定！")
 CHANNEL_ID = int(CHANNEL_ID_STR)
+
+if SLEEP_CHANNEL_ID_STR is None:
+    raise RuntimeError("SLEEP_CHANNEL_ID 環境變數沒有設定！（睡覺提醒用的新文字頻道 ID）")
+SLEEP_CHANNEL_ID = int(SLEEP_CHANNEL_ID_STR)
 
 # 使用 Asia/Taipei 時區
 TZ = ZoneInfo("Asia/Taipei")
@@ -46,12 +47,33 @@ EXAM_END   = datetime.date(2026, 4, 24)  # 考試最後一天
 # Intents（要可讀取訊息內容才能用指令）
 intents = discord.Intents.default()
 intents.message_content = True
+# ✅ 需要抓成員名單來 tag 未回報者（請同時去 Developer Portal 開啟 SERVER MEMBERS INTENT）
+intents.members = True
+
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # 音樂狀態
 music_queue = []   # 存 {"type": "yt", "url": "..."} 或 {"type": "file", "path": "...", "title": "..."}
 is_playing = False
-task_started = False
+
+task_started = False  # 用來避免 on_ready 重複啟動 task
+
+# =========================
+# Sleep Check 狀態（不落地保存）
+# =========================
+sleep_today: datetime.date | None = None
+sleep_message_id: int | None = None
+sleep_responded_users: set[int] = set()
+
+
+def _sleep_label_time(dt: datetime.datetime) -> str:
+    # 顯示用：x月x日的凌晨2:00
+    return f"{dt.month}月{dt.day}日的凌晨 2:00"
+
+
+def _allowed_mentions_all():
+    # 允許 @everyone + tag 使用者
+    return discord.AllowedMentions(everyone=True, users=True, roles=False)
 
 
 # =========================
@@ -68,20 +90,18 @@ from typing import Optional
 def ensure_cookies_file() -> Optional[str]:
     b64 = os.getenv("YT_COOKIES_B64")
     if not b64:
-        print("[yt] YT_COOKIES_B64 not set")
+        print("[yt] YT_COOKIES_B64 not set", flush=True)
         return None
 
     path = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
     try:
-        # 每次啟動都覆蓋寫入，避免舊檔壞掉或寫到一半
         with open(path, "wb") as f:
             f.write(base64.b64decode(b64))
-        print(f"[yt] cookies written: {path} ({os.path.getsize(path)} bytes)")
+        print(f"[yt] cookies written: {path} ({os.path.getsize(path)} bytes)", flush=True)
         return path
     except Exception as e:
-        print(f"[yt] cookies decode/write failed: {e}")
+        print(f"[yt] cookies decode/write failed: {e}", flush=True)
         return None
-
 
 
 def build_ytdlp_options():
@@ -108,28 +128,15 @@ def build_ytdlp_options():
         },
     }
 
-    # ✅ cookies：沒有就很容易被擋
     if cookies_path:
         opts["cookiefile"] = cookies_path
     else:
-        # 這行讓你在 Railway logs 一眼看懂：cookies 根本沒吃到
-        print("[yt] WARNING: cookiefile not available -> likely to get 'not a bot' error")
-
-    # ✅ JS runtime：你 log 說找不到，所以我們會靠 Dockerfile 裝 node
-    # yt-dlp 通常會自動偵測 node/deno；不用強塞參數也行（先裝起來最重要）
-
-    return opts
-
-    if cookies_path:
-        opts["cookiefile"] = cookies_path
+        print("[yt] WARNING: cookiefile not available -> likely to get 'not a bot' error", flush=True)
 
     return opts
 
 
 async def get_stream_info(url: str):
-    """
-    播放前才去抓最新的 stream_url，避免排隊時 URL 過期。
-    """
     loop = asyncio.get_running_loop()
     ydl_opts = build_ytdlp_options()
 
@@ -147,6 +154,226 @@ async def get_stream_info(url: str):
 
 
 # =========================
+# Sleep Check UI（按鈕 + Modal）
+# =========================
+
+class NotSleepModal(discord.ui.Modal, title="還沒睡（告訴我為什麼！）"):
+    reason = discord.ui.TextInput(
+        label="原因（必填）",
+        placeholder="例如：在趕報告 / 打遊戲停不下來 / 失眠…",
+        required=True,
+        min_length=1,
+        max_length=200,
+    )
+
+    def __init__(self, channel: discord.TextChannel):
+        super().__init__(timeout=180)
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        global sleep_responded_users
+
+        user_id = interaction.user.id
+        if user_id in sleep_responded_users:
+            await interaction.response.send_message("你今天已回報過了，不能修改喔！", ephemeral=True)
+            return
+
+        sleep_responded_users.add(user_id)
+
+        reason_text = str(self.reason.value).strip()
+        # 先回應避免互動超時（ephemeral）
+        await interaction.response.send_message("已記錄 ✅", ephemeral=True)
+
+        # 公開回覆
+        await self.channel.send(
+            f"❌ {interaction.user.mention} 還沒睡\n原因：{reason_text}",
+            allowed_mentions=_allowed_mentions_all(),
+        )
+
+
+class SleepCheckView(discord.ui.View):
+    def __init__(self, channel: discord.TextChannel):
+        super().__init__(timeout=None)
+        self.channel = channel
+
+    @discord.ui.button(label="✅ 我睡了", style=discord.ButtonStyle.success)
+    async def slept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        global sleep_responded_users
+
+        user_id = interaction.user.id
+        if user_id in sleep_responded_users:
+            await interaction.response.send_message("你今天已回報過了，不能修改喔！", ephemeral=True)
+            return
+
+        sleep_responded_users.add(user_id)
+
+        # 先 defer，避免 interaction failed
+        await interaction.response.send_message("已記錄 ✅", ephemeral=True)
+
+        await self.channel.send(
+            f"✅ {interaction.user.mention} 我睡了",
+            allowed_mentions=_allowed_mentions_all(),
+        )
+
+    @discord.ui.button(label="❌ 還沒睡（告訴我為什麼！）", style=discord.ButtonStyle.danger)
+    async def not_slept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = interaction.user.id
+        if user_id in sleep_responded_users:
+            await interaction.response.send_message("你今天已回報過了，不能修改喔！", ephemeral=True)
+            return
+
+        # 開 modal，原因必填
+        await interaction.response.send_modal(NotSleepModal(self.channel))
+
+
+# =========================
+# Sleep Check 排程：02:00 發 + 02:30 檢查 tag
+# =========================
+
+async def sleep_check_task():
+    """
+    每天 02:00 發睡覺提醒（含按鈕）
+    每天 02:30 檢查未回報者並 tag + @everyone
+    不保存資料：只用記憶體 set 記今天按過的人
+    """
+    global sleep_today, sleep_message_id, sleep_responded_users
+
+    await bot.wait_until_ready()
+
+    channel = bot.get_channel(SLEEP_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(SLEEP_CHANNEL_ID)
+        except Exception as e:
+            print(f"[sleep] 無法取得 SLEEP_CHANNEL_ID 頻道：{e}", flush=True)
+            return
+
+    if not isinstance(channel, discord.TextChannel):
+        print("[sleep] SLEEP_CHANNEL_ID 不是文字頻道，請確認設定", flush=True)
+        return
+
+    print("[sleep] Sleep check task started (TZ=Asia/Taipei)", flush=True)
+
+    while not bot.is_closed():
+        now = datetime.datetime.now(TZ)
+
+        # 今天 02:00
+        send_dt = now.replace(hour=2, minute=0, second=0, microsecond=0)
+        # 今天 02:30
+        check_dt = now.replace(hour=2, minute=30, second=0, microsecond=0)
+
+        # 如果現在已經過了 02:30，代表今天的流程已過，排到明天
+        if now >= check_dt:
+            send_dt = send_dt + datetime.timedelta(days=1)
+            check_dt = check_dt + datetime.timedelta(days=1)
+        # 若過了 02:00 但還沒到 02:30：今天不再發提醒（避免重啟後補發），只跑 02:30 檢查
+        elif now >= send_dt:
+            # 不改 send_dt（保持今天），但我們會判斷是否已經發過
+            pass
+
+        # ---------- 02:00 發提醒 ----------
+        # sleep_today 用來避免重複發（例如 bot 重啟 / on_ready 多次）
+        # 規則：只有當 now < 02:00 時才會等待到 02:00；如果 now 在 02:00~02:30 之間，會嘗試「若今天未發過」才補發。
+        if sleep_today != send_dt.date():
+            # 等到 send_dt
+            wait_send = (send_dt - datetime.datetime.now(TZ)).total_seconds()
+            if wait_send > 0:
+                await asyncio.sleep(wait_send)
+
+            # 發提醒前，再更新一次 now
+            now2 = datetime.datetime.now(TZ)
+            today = now2.date()
+
+            # 重置今日狀態
+            sleep_today = today
+            sleep_message_id = None
+            sleep_responded_users = set()
+
+            label_time = _sleep_label_time(now2)
+            content = (
+                f"🌙 現在是 **{label_time}**，該睡覺囉！\n"
+                f"請在下方回報：你有沒有乖乖睡覺？"
+            )
+
+            msg = await channel.send(
+                content,
+                view=SleepCheckView(channel),
+                allowed_mentions=_allowed_mentions_all()
+            )
+            sleep_message_id = msg.id
+
+        # ---------- 等到 02:30 檢查 ----------
+        wait_check = (check_dt - datetime.datetime.now(TZ)).total_seconds()
+        if wait_check > 0:
+            await asyncio.sleep(wait_check)
+
+        # 檢查當下仍是同一天的流程（避免跨天 race）
+        now3 = datetime.datetime.now(TZ)
+        if sleep_today != now3.date():
+            # 代表今天沒有正常發出/被重置，直接進下一輪
+            continue
+
+        # 抓成員名單，找出未回報者
+        guild = channel.guild
+
+        # 取得 guild 成員（members intent 開啟會更完整）
+        members: list[discord.Member] = []
+        try:
+            # 如果快取有，就用快取；不夠完整也沒關係（你不存資料的前提下，寧可少 tag）
+            members = [m for m in guild.members]
+            if len(members) == 0:
+                # 嘗試用 fetch_members 補
+                async for m in guild.fetch_members(limit=None):
+                    members.append(m)
+        except Exception as e:
+            print(f"[sleep] 取得成員名單失敗：{e}", flush=True)
+
+        # 過濾：不 tag bot / system
+        targets = []
+        for m in members:
+            if m.bot:
+                continue
+            if m.id in sleep_responded_users:
+                continue
+            targets.append(m)
+
+        if not targets:
+            await channel.send("🎉 02:30 檢查：大家都回報了！晚安～", allowed_mentions=_allowed_mentions_all())
+        else:
+            # 先 @everyone（你指定要全體）
+            await channel.send(
+                "@everyone ⏰ 02:30 了！還沒回報的人請趕快按上方按鈕回報～",
+                allowed_mentions=_allowed_mentions_all(),
+            )
+
+            # 再分批 tag 未回報者（避免 2000 字爆掉）
+            chunk = []
+            current_len = 0
+            for m in targets:
+                mention = m.mention
+                # +1 是空格
+                add_len = len(mention) + 1
+                if current_len + add_len > 1800:  # 留一點安全空間
+                    await channel.send(
+                        "還沒回報的人： " + " ".join(chunk),
+                        allowed_mentions=_allowed_mentions_all(),
+                    )
+                    chunk = []
+                    current_len = 0
+                chunk.append(mention)
+                current_len += add_len
+
+            if chunk:
+                await channel.send(
+                    "還沒回報的人： " + " ".join(chunk),
+                    allowed_mentions=_allowed_mentions_all(),
+                )
+
+        # 進入下一輪（明天）
+        # sleep_today 會在下一輪 02:00 重置，不用特別清
+
+
+# =========================
 # 播放下一首（核心）
 # =========================
 
@@ -161,7 +388,6 @@ async def play_next(ctx):
     item = music_queue.pop(0)
     voice_client = ctx.voice_client
 
-    # 如果突然不在語音了
     if voice_client is None:
         is_playing = False
         return
@@ -182,22 +408,20 @@ async def play_next(ctx):
 
     except Exception as e:
         await ctx.send(f"❌ 取得音訊失敗：`{e}`\n（可能是 YouTube 驗證或雲端 IP 被擋）")
-        # 失敗就繼續下一首，避免卡住
         asyncio.create_task(play_next(ctx))
         return
 
     def after_playing(error):
         if error:
-            print(f"播放發生錯誤：{error}")
+            print(f"播放發生錯誤：{error}", flush=True)
 
-        # 如果是檔案播放，播完刪掉暫存
         if item["type"] == "file":
             try:
                 p = item["path"]
                 if os.path.exists(p):
                     os.remove(p)
             except Exception as ex:
-                print(f"刪除暫存檔失敗：{ex}")
+                print(f"刪除暫存檔失敗：{ex}", flush=True)
 
         asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
 
@@ -214,10 +438,10 @@ async def countdown_task():
     channel = bot.get_channel(CHANNEL_ID)
 
     if channel is None:
-        print("找不到頻道，請確認 CHANNEL_ID 是否正確！")
+        print("找不到頻道，請確認 CHANNEL_ID 是否正確！", flush=True)
         return
 
-    print("倒數排程啟動…（時區：Asia/Taipei）")
+    print("倒數排程啟動…（時區：Asia/Taipei）", flush=True)
 
     while not bot.is_closed():
         now = datetime.datetime.now(TZ)
@@ -229,7 +453,7 @@ async def countdown_task():
             next_send = today_send
 
         wait_seconds = (next_send - now).total_seconds()
-        print(f"下一次發訊息時間（Asia/Taipei）：{next_send}（等待 {wait_seconds:.0f} 秒）")
+        print(f"下一次發訊息時間（Asia/Taipei）：{next_send}（等待 {wait_seconds:.0f} 秒）", flush=True)
         await asyncio.sleep(wait_seconds)
 
         now = datetime.datetime.now(TZ)
@@ -237,17 +461,13 @@ async def countdown_task():
 
         if today == EXAM_START:
             msg = "(4/20) 今天是期中考第一天！Fight！！💪📚"
-
         elif EXAM_START < today < EXAM_END:
             msg = f"({today.month}/{today.day}) 期中考進行中！加油！！🔥"
-
         elif today == EXAM_END:
             msg = "(4/24) 今天是期中考最後一天！撐住！！🎯"
-
         elif today > EXAM_END:
             days_after = (today - EXAM_END).days
             msg = f"📘 期中考已經結束 {days_after} 天，辛苦了～🎉"
-
         else:
             diff = (EXAM_START - today).days
             msg = f"📘 期中考倒數：還剩 **{diff} 天**！（考試第一天：4/20）"
@@ -258,9 +478,10 @@ async def countdown_task():
 @bot.event
 async def on_ready():
     global task_started
-    print(f"Bot 已登入：{bot.user}")
+    print(f"Bot 已登入：{bot.user}", flush=True)
     if not task_started:
         asyncio.create_task(countdown_task())
+        asyncio.create_task(sleep_check_task())
         task_started = True
 
 
@@ -270,15 +491,14 @@ async def on_ready():
 
 @bot.command(name="exam")
 async def exam_countdown(ctx: commands.Context):
-    today = datetime.date.today()
+    # 你原本用 date.today() 會吃到主機時區，這裡改成用台北時區（更準）
+    today = datetime.datetime.now(TZ).date()
 
     if today < EXAM_START:
         days = (EXAM_START - today).days
         msg = f"📘 距離期中考第一天（4/20）還有 **{days} 天**！"
-
     elif today == EXAM_START:
         msg = "📘 今天是期中考第一天（4/20）！Fight！！🔥"
-
     elif EXAM_START < today < EXAM_END:
         day_no = (today - EXAM_START).days + 1
         left = (EXAM_END - today).days
@@ -286,10 +506,8 @@ async def exam_countdown(ctx: commands.Context):
             f"📘 期中考進行中（第 **{day_no} 天**）！\n"
             f"⏳ 距離最後一天（4/24）還有 **{left} 天**"
         )
-
     elif today == EXAM_END:
         msg = "📘 今天是期中考最後一天（4/24） 解脫了！"
-
     else:
         days_after = (today - EXAM_END).days
         msg = f"🎉 期中考已結束 **{days_after} 天**，辛苦了～"
@@ -370,7 +588,7 @@ async def clear_messages_error(ctx: commands.Context, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("你沒有**管理訊息**的權限，不能使用這個指令！")
     else:
-        print(f"clear 指令錯誤：{error}")
+        print(f"clear 指令錯誤：{error}", flush=True)
 
 
 # =========================
@@ -407,7 +625,6 @@ async def play_audio(ctx: commands.Context):
     temp_filename = f"temp_{attachment.id}.mp3"
     await attachment.save(temp_filename)
 
-    # queue 存檔案
     music_queue.append({"type": "file", "path": temp_filename, "title": attachment.filename})
     await ctx.send(f"🎵 已加入播放清單：**{attachment.filename}**")
 
