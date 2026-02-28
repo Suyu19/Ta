@@ -538,12 +538,11 @@ async def on_ready():
 
 
 # =========================
-# 指令：exam / help
+# 指令：exam / help / sleeptest / sleepcheck
 # =========================
 
 @bot.command(name="exam")
 async def exam_countdown(ctx: commands.Context):
-    # 你原本用 date.today() 會吃到主機時區，這裡改成用台北時區（更準）
     today = datetime.datetime.now(TZ).date()
 
     if today < EXAM_START:
@@ -568,6 +567,23 @@ async def exam_countdown(ctx: commands.Context):
 
 
 @bot.command(name="help")
+async def custom_help(ctx: commands.Context):
+    msg = (
+        "!後：\n"
+        "  help  顯示所有可用功能指令\n"
+        "  join   加入語音頻道陪你\n"
+        "  bye   離開語音頻道\n\n"
+        "  clear （數字） 清除當前頻道最近 X 則訊息\n\n"
+        "  play  播放這則訊息附帶的 mp3 檔\n"
+        "  yt      後接網址播放音樂\n"
+        "  skip  跳到清單下一首\n"
+        "  stop  停止所有音樂播放\n\n"
+        "  sleeptest   立刻發出睡覺回報按鈕（測試）\n"
+        "  sleepcheck  立刻做一次未回報檢查（測試）"
+    )
+    await ctx.send(msg)
+
+
 @bot.command(name="sleeptest")
 @commands.has_permissions(administrator=True)
 async def sleep_test(ctx: commands.Context):
@@ -588,8 +604,8 @@ async def sleep_test(ctx: commands.Context):
     sleep_responded_users = set()
 
     content = (
-        f"（測試）🌙 現在是 **{now.month}月{now.day}日的凌晨 2:00**，該睡覺囉！\n"
-        f"請在下方回報：有沒有乖乖睡覺！"
+        f"🧪（測試）🌙 現在是 **{now.month}月{now.day}日的凌晨 2:00**，該睡覺囉！\n"
+        f"請在下方回報：你有沒有乖乖睡覺？"
     )
     msg = await channel.send(content, view=SleepCheckView(channel), allowed_mentions=_allowed_mentions_all())
     sleep_message_id = msg.id
@@ -606,11 +622,11 @@ async def sleep_check_now(ctx: commands.Context):
         channel = await bot.fetch_channel(SLEEP_CHANNEL_ID)
 
     if not isinstance(channel, discord.TextChannel):
-        await ctx.send("SLEEP_CHANNEL_ID 不是文字頻道，請檢查設定。")
+        await ctx.send("❌ SLEEP_CHANNEL_ID 不是文字頻道，請檢查設定。")
         return
 
     await run_sleep_check_now(channel)
-    await ctx.send("已執行一次測試檢查（請看睡覺頻道）。")
+    await ctx.send("✅ 已執行一次測試檢查（請看睡覺頻道）。")
 
 async def custom_help(ctx: commands.Context):
     msg = (
