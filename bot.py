@@ -336,10 +336,12 @@ async def sleep_check_task():
             now2 = datetime.datetime.now(TZ)
             today = now2.date()
 
-            # 重置今日狀態
-            sleep_today = today
+            # ✅ 如果今天還沒初始化過，才重置（避免把 2:00 前的提前回報洗掉）
+            if sleep_today != today:
+                sleep_today = today
+                sleep_responded_users = set()
+
             sleep_message_id = None
-            sleep_responded_users = set()
 
             label_time = _sleep_label_time(now2)
             content = (
@@ -540,7 +542,69 @@ async def on_ready():
 # =========================
 # 指令：exam / help / sleeptest / sleepcheck
 # =========================
+@bot.command(name="sleep")
+async def early_sleep(ctx: commands.Context):
+    """提前回報：我睡了（2:00 前也能用）"""
+    global sleep_today, sleep_responded_users
 
+    now = datetime.datetime.now(TZ)
+    today = now.date()
+
+    # ✅ 確保今天狀態存在（不然 01:00 回報時 sleep_today 可能還是 None）
+    if sleep_today != today:
+        sleep_today = today
+        sleep_responded_users = set()
+
+    user_id = ctx.author.id
+    if user_id in sleep_responded_users:
+        await ctx.send("你今天已回報過了，不能修改喔！")
+        return
+
+    sleep_responded_users.add(user_id)
+
+    # 公開回報：建議統一丟到睡覺頻道
+    channel = bot.get_channel(SLEEP_CHANNEL_ID)
+    if channel is None:
+        channel = await bot.fetch_channel(SLEEP_CHANNEL_ID)
+
+    await channel.send(
+        f"✅ {ctx.author.mention} 我睡了（提前回報：{now.hour:02d}:{now.minute:02d}）",
+        allowed_mentions=_allowed_mentions_all(),
+    )
+
+
+@bot.command(name="nosleep")
+async def early_no_sleep(ctx: commands.Context, *, reason: str = ""):
+    """提前回報：還沒睡（必須提供原因）"""
+    global sleep_today, sleep_responded_users
+
+    reason = reason.strip()
+    if not reason:
+        await ctx.send("❌ 你要說明原因喔！用法：`!nosleep 原因...`")
+        return
+
+    now = datetime.datetime.now(TZ)
+    today = now.date()
+
+    if sleep_today != today:
+        sleep_today = today
+        sleep_responded_users = set()
+
+    user_id = ctx.author.id
+    if user_id in sleep_responded_users:
+        await ctx.send("你今天已回報過了，不能修改喔！")
+        return
+
+    sleep_responded_users.add(user_id)
+
+    channel = bot.get_channel(SLEEP_CHANNEL_ID)
+    if channel is None:
+        channel = await bot.fetch_channel(SLEEP_CHANNEL_ID)
+
+    await channel.send(
+        f"❌ {ctx.author.mention} 還沒睡（提前回報：{now.hour:02d}:{now.minute:02d}）\n原因：{reason[:200]}",
+        allowed_mentions=_allowed_mentions_all(),
+    )
 @bot.command(name="exam")
 async def exam_countdown(ctx: commands.Context):
     today = datetime.datetime.now(TZ).date()
