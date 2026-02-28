@@ -694,19 +694,7 @@ async def sleep_check_now(ctx: commands.Context):
     await run_sleep_check_now(channel)
     await ctx.send("✅ 已執行一次測試檢查（請看睡覺頻道）。")
 
-async def custom_help(ctx: commands.Context):
-    msg = (
-        "!後：\n"
-        "  help  顯示所有可用功能指令\n"
-        "  join   加入語音頻道陪你\n"
-        "  bye   離開語音頻道\n\n"
-        "  clear （數字） 清除當前頻道最近 X 則訊息\n\n"
-        "  play  播放這則訊息附帶的 mp3 檔\n"
-        "  yt      後接網址播放音樂\n"
-        "  skip  跳到清單下一首\n"
-        "  stop  停止所有音樂播放"
-    )
-    await ctx.send(msg)
+
 
 
 # =========================
