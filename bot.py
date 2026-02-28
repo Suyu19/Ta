@@ -230,6 +230,58 @@ class SleepCheckView(discord.ui.View):
 # Sleep Check 排程：02:00 發 + 02:30 檢查 tag
 # =========================
 
+async def run_sleep_check_now(channel: discord.TextChannel):
+    """立刻執行一次 02:30 檢查：@everyone + tag 未回報者"""
+    global sleep_today, sleep_responded_users
+
+    guild = channel.guild
+
+    members: list[discord.Member] = []
+    try:
+        members = [m for m in guild.members]
+        if len(members) == 0:
+            async for m in guild.fetch_members(limit=None):
+                members.append(m)
+    except Exception as e:
+        print(f"[sleep] 取得成員名單失敗：{e}", flush=True)
+
+    targets = []
+    for m in members:
+        if m.bot:
+            continue
+        if m.id in sleep_responded_users:
+            continue
+        targets.append(m)
+
+    if not targets:
+        await channel.send("🎉 檢查結果：大家都回報了！晚安～", allowed_mentions=_allowed_mentions_all())
+        return
+
+    await channel.send(
+        "@everyone ⏰ 測試檢查：還沒回報的人請按上方按鈕回報～",
+        allowed_mentions=_allowed_mentions_all(),
+    )
+
+    chunk = []
+    current_len = 0
+    for m in targets:
+        mention = m.mention
+        add_len = len(mention) + 1
+        if current_len + add_len > 1800:
+            await channel.send(
+                "還沒回報的人： " + " ".join(chunk),
+                allowed_mentions=_allowed_mentions_all(),
+            )
+            chunk = []
+            current_len = 0
+        chunk.append(mention)
+        current_len += add_len
+
+    if chunk:
+        await channel.send(
+            "還沒回報的人： " + " ".join(chunk),
+            allowed_mentions=_allowed_mentions_all(),
+        )
 async def sleep_check_task():
     """
     每天 02:00 發睡覺提醒（含按鈕）
@@ -516,6 +568,50 @@ async def exam_countdown(ctx: commands.Context):
 
 
 @bot.command(name="help")
+@bot.command(name="sleeptest")
+@commands.has_permissions(administrator=True)
+async def sleep_test(ctx: commands.Context):
+    """立刻在睡覺頻道發出提醒（含按鈕），並重置今日回報狀態"""
+    global sleep_today, sleep_message_id, sleep_responded_users
+
+    channel = bot.get_channel(SLEEP_CHANNEL_ID)
+    if channel is None:
+        channel = await bot.fetch_channel(SLEEP_CHANNEL_ID)
+
+    if not isinstance(channel, discord.TextChannel):
+        await ctx.send("❌ SLEEP_CHANNEL_ID 不是文字頻道，請檢查設定。")
+        return
+
+    now = datetime.datetime.now(TZ)
+    sleep_today = now.date()
+    sleep_message_id = None
+    sleep_responded_users = set()
+
+    content = (
+        f"（測試）🌙 現在是 **{now.month}月{now.day}日的凌晨 2:00**，該睡覺囉！\n"
+        f"請在下方回報：有沒有乖乖睡覺！"
+    )
+    msg = await channel.send(content, view=SleepCheckView(channel), allowed_mentions=_allowed_mentions_all())
+    sleep_message_id = msg.id
+
+    await ctx.send("✅ 已在睡覺頻道發出測試訊息（含按鈕）。")
+
+
+@bot.command(name="sleepcheck")
+@commands.has_permissions(administrator=True)
+async def sleep_check_now(ctx: commands.Context):
+    """立刻做一次 02:30 檢查（@everyone + tag 未回報者）"""
+    channel = bot.get_channel(SLEEP_CHANNEL_ID)
+    if channel is None:
+        channel = await bot.fetch_channel(SLEEP_CHANNEL_ID)
+
+    if not isinstance(channel, discord.TextChannel):
+        await ctx.send("SLEEP_CHANNEL_ID 不是文字頻道，請檢查設定。")
+        return
+
+    await run_sleep_check_now(channel)
+    await ctx.send("已執行一次測試檢查（請看睡覺頻道）。")
+
 async def custom_help(ctx: commands.Context):
     msg = (
         "!後：\n"
