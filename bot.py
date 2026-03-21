@@ -177,34 +177,29 @@ async def fetch_crypto_prices():
 
 async def fetch_24h_ticker_stats():
     url = "https://data-api.binance.vision/api/v3/ticker/24hr"
-    symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+    symbol_map = {
+        "BTC": "BTCUSDT",
+        "ETH": "ETHUSDT",
+        "BNB": "BNBUSDT",
+    }
 
     timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, params={"symbols": json.dumps(symbols)}) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise RuntimeError(f"Binance 24hr API 錯誤：{resp.status} {text[:200]}")
-            data = await resp.json()
-
     result = {}
-    for item in data:
-        symbol = item["symbol"]
-        if symbol == "BTCUSDT":
-            key = "BTC"
-        elif symbol == "ETHUSDT":
-            key = "ETH"
-        elif symbol == "BNBUSDT":
-            key = "BNB"
-        else:
-            continue
 
-        result[key] = {
-            "lastPrice": float(item["lastPrice"]),
-            "priceChangePercent": float(item["priceChangePercent"]),
-            "highPrice": float(item["highPrice"]),
-            "lowPrice": float(item["lowPrice"]),
-        }
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for key, symbol in symbol_map.items():
+            async with session.get(url, params={"symbol": symbol}) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"Binance 24hr API 錯誤：{resp.status} {text[:200]}")
+                item = await resp.json()
+
+            result[key] = {
+                "lastPrice": float(item["lastPrice"]),
+                "priceChangePercent": float(item["priceChangePercent"]),
+                "highPrice": float(item["highPrice"]),
+                "lowPrice": float(item["lowPrice"]),
+            }
 
     return result
 
