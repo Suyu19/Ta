@@ -11,8 +11,11 @@ import tempfile
 import aiohttp
 import math
 from typing import Optional
+import json
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 
-print("BOOT VERSION: 2026-03-21-crypto-alert-1", flush=True)
+print("BOOT VERSION: 2026-03-21-crypto-alert-daily-summary-1", flush=True)
 
 # =========================
 # 基本設定
@@ -44,6 +47,22 @@ if CRYPTO_ALERT_CHANNEL_ID_STR is None:
     raise RuntimeError("CRYPTO_ALERT_CHANNEL_ID 環境變數沒有設定！（加密貨幣提醒用的新文字頻道 ID）")
 CRYPTO_ALERT_CHANNEL_ID = int(CRYPTO_ALERT_CHANNEL_ID_STR)
 
+DAILY_SUMMARY_HOUR = 19
+DAILY_SUMMARY_MINUTE = 0
+
+NEWS_FEEDS = [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://cointelegraph.com/rss",
+]
+
+NEWS_KEYWORDS = [
+    "bitcoin", "btc", "ethereum", "eth", "bnb", "binance",
+    "etf", "sec", "fed", "hack", "approval", "regulation",
+    "stablecoin", "solana", "defi"
+]
+
+last_daily_summary_date: datetime.date | None = None
+
 TZ = ZoneInfo("Asia/Taipei")
 
 # 期中考期間
@@ -66,12 +85,6 @@ task_started = False
 # =========================
 # Crypto Alert 設定
 # =========================
-
-COIN_IDS = {
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "BNB": "binancecoin",
-}
 
 price_history: dict[str, list[tuple[datetime.datetime, float]]] = {
     "BTC": [],
@@ -117,6 +130,12 @@ def fmt_price(symbol: str, price: float) -> str:
     return f"${price:,.2f}"
 
 
+def fmt_price_compact(symbol: str, price: float) -> str:
+    if symbol == "BTC":
+        return f"${price:,.0f}"
+    return f"${price:,.0f}" if price >= 100 else f"${price:,.2f}"
+
+
 def pct_change(old: float, new: float) -> float:
     if old == 0:
         return 0.0
@@ -154,6 +173,161 @@ async def fetch_crypto_prices():
                 results[coin] = float(data["price"])
 
     return results
+
+
+async def fetch_24h_ticker_stats():
+    url = "https://data-api.binance.vision/api/v3/ticker/24hr"
+    symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params={"symbols": json.dumps(symbols)}) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"Binance 24hr API 錯誤：{resp.status} {text[:200]}")
+            data = await resp.json()
+
+    result = {}
+    for item in data:
+        symbol = item["symbol"]
+        if symbol == "BTCUSDT":
+            key = "BTC"
+        elif symbol == "ETHUSDT":
+            key = "ETH"
+        elif symbol == "BNBUSDT":
+            key = "BNB"
+        else:
+            continue
+
+        result[key] = {
+            "lastPrice": float(item["lastPrice"]),
+            "priceChangePercent": float(item["priceChangePercent"]),
+            "highPrice": float(item["highPrice"]),
+            "lowPrice": float(item["lowPrice"]),
+        }
+
+    return result
+
+
+def format_daily_summary_line(symbol: str, stats: dict) -> str:
+    last_price = fmt_price_compact(symbol, stats["lastPrice"])
+    pct = stats["priceChangePercent"]
+    pct_str = f"+{pct:.1f}%" if pct >= 0 else f"{pct:.1f}%"
+    high_price = fmt_price_compact(symbol, stats["highPrice"]).replace("$", "")
+    low_price = fmt_price_compact(symbol, stats["lowPrice"]).replace("$", "")
+
+    return f"{symbol}：{last_price}（24h {pct_str}，高：{high_price} / 低：{low_price}）"
+
+
+async def fetch_rss_articles(feed_url: str):
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(feed_url) as resp:
+            if resp.status != 200:
+                return []
+            text = await resp.text()
+
+    try:
+        root = ET.fromstring(text)
+    except Exception:
+        return []
+
+    articles = []
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        pub_date_text = (item.findtext("pubDate") or "").strip()
+        description = (item.findtext("description") or "").strip()
+
+        if not title or not link:
+            continue
+
+        pub_dt = None
+        if pub_date_text:
+            try:
+                pub_dt = parsedate_to_datetime(pub_date_text)
+                if pub_dt.tzinfo is None:
+                    pub_dt = pub_dt.replace(tzinfo=datetime.timezone.utc)
+            except Exception:
+                pub_dt = None
+
+        articles.append({
+            "title": title,
+            "link": link,
+            "description": description,
+            "published_at": pub_dt,
+        })
+
+    return articles
+
+
+def score_article(article: dict) -> int:
+    text = f"{article['title']} {article['description']}".lower()
+    score = 0
+
+    for kw in NEWS_KEYWORDS:
+        if kw in text:
+            score += 2
+
+    title_lower = article["title"].lower()
+    for strong_kw in ["bitcoin", "btc", "ethereum", "eth", "binance", "etf", "sec", "hack"]:
+        if strong_kw in title_lower:
+            score += 2
+
+    return score
+
+
+async def get_top_crypto_news(limit: int = 2):
+    all_articles = []
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now_utc - datetime.timedelta(hours=24)
+
+    for feed_url in NEWS_FEEDS:
+        articles = await fetch_rss_articles(feed_url)
+        for article in articles:
+            pub_dt = article["published_at"]
+            if pub_dt is not None and pub_dt < cutoff:
+                continue
+            all_articles.append(article)
+
+    dedup = {}
+    for article in all_articles:
+        key = article["title"].strip().lower()
+        if key not in dedup:
+            dedup[key] = article
+
+    scored = list(dedup.values())
+    scored.sort(
+        key=lambda a: (
+            score_article(a),
+            a["published_at"].timestamp() if a["published_at"] else 0
+        ),
+        reverse=True
+    )
+
+    return scored[:limit]
+
+
+async def build_daily_summary_message(now_dt: datetime.datetime) -> str:
+    stats = await fetch_24h_ticker_stats()
+    news_items = await get_top_crypto_news(limit=2)
+
+    lines = [
+        f"📊 每日幣圈摘要（{now_dt.month:02d}/{now_dt.day:02d} {now_dt.hour:02d}:{now_dt.minute:02d}）",
+        "",
+        format_daily_summary_line("BTC", stats["BTC"]),
+        format_daily_summary_line("ETH", stats["ETH"]),
+        format_daily_summary_line("BNB", stats["BNB"]),
+    ]
+
+    if news_items:
+        lines.append("")
+        lines.append("📰 今日重點新聞")
+        for idx, article in enumerate(news_items, start=1):
+            lines.append(f"{idx}. {article['title']}")
+            lines.append(article["link"])
+
+    return "\n".join(lines)
 
 
 async def check_percent_alerts(channel: discord.TextChannel, symbol: str, now: datetime.datetime, current_price: float):
@@ -708,6 +882,51 @@ async def countdown_task():
         await channel.send(msg)
 
 
+async def daily_crypto_summary_task():
+    global last_daily_summary_date
+
+    await bot.wait_until_ready()
+
+    channel = bot.get_channel(CRYPTO_ALERT_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(CRYPTO_ALERT_CHANNEL_ID)
+        except Exception as e:
+            print(f"[daily-summary] 無法取得提醒頻道：{e}", flush=True)
+            return
+
+    if not isinstance(channel, discord.TextChannel):
+        print("[daily-summary] CRYPTO_ALERT_CHANNEL_ID 不是文字頻道", flush=True)
+        return
+
+    print("[daily-summary] 每日幣圈摘要排程啟動", flush=True)
+
+    while not bot.is_closed():
+        now = datetime.datetime.now(TZ)
+        target = now.replace(hour=DAILY_SUMMARY_HOUR, minute=DAILY_SUMMARY_MINUTE, second=0, microsecond=0)
+
+        if now >= target:
+            target = target + datetime.timedelta(days=1)
+
+        wait_seconds = (target - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+
+        now2 = datetime.datetime.now(TZ)
+        today = now2.date()
+
+        if last_daily_summary_date == today:
+            continue
+
+        try:
+            msg = await build_daily_summary_message(now2)
+        except Exception as e:
+            print(f"[daily-summary] 建立摘要失敗：{e}", flush=True)
+            continue
+
+        await channel.send(msg)
+        last_daily_summary_date = today
+
+
 @bot.event
 async def on_ready():
     global task_started
@@ -715,12 +934,13 @@ async def on_ready():
     if not task_started:
         asyncio.create_task(countdown_task())
         asyncio.create_task(sleep_check_task())
+        asyncio.create_task(daily_crypto_summary_task())
         crypto_price_watch_task.start()
         task_started = True
 
 
 # =========================
-# 指令：exam / help / sleeptest / sleepcheck / price
+# 指令：exam / help / sleeptest / sleepcheck / price / dailytest
 # =========================
 
 @bot.command(name="sleep")
@@ -825,13 +1045,27 @@ async def price_now(ctx: commands.Context):
     await ctx.send(msg)
 
 
+@bot.command(name="dailytest")
+@commands.has_permissions(administrator=True)
+async def daily_test(ctx: commands.Context):
+    now = datetime.datetime.now(TZ)
+    try:
+        msg = await build_daily_summary_message(now)
+    except Exception as e:
+        await ctx.send(f"❌ 測試每日摘要失敗：{e}")
+        return
+
+    await ctx.send(msg)
+
+
 @bot.command(name="help")
 async def custom_help(ctx: commands.Context):
     msg = (
         "!後：\n"
         "  help  顯示所有可用功能指令\n"
         "  exam  顯示期中考倒數\n"
-        "  price  顯示 BTC / ETH / BNB 目前價格\n\n"
+        "  price  顯示 BTC / ETH / BNB 目前價格\n"
+        "  dailytest  測試每日幣圈摘要（管理員）\n\n"
         "  join   加入語音頻道陪你\n"
         "  bye   離開語音頻道\n\n"
         "  clear （數字） 清除當前頻道最近 X 則訊息\n\n"
@@ -848,6 +1082,7 @@ async def custom_help(ctx: commands.Context):
         "  BTC / ETH / BNB：1 小時內漲跌超過 2% 提醒\n"
         "  BTC：每跨 1000 美元提醒\n"
         "  ETH：每跨 100 美元提醒\n"
+        "  每天 19:00 自動發送每日幣圈摘要與 2 則重點新聞\n"
     )
     await ctx.send(msg)
 
