@@ -134,25 +134,26 @@ def should_send_cooldown(last_time: datetime.datetime | None, now: datetime.date
 
 
 async def fetch_crypto_prices():
-    url = "https://api.coingecko.com/api/v3/simple/price"
-    params = {
-        "ids": ",".join(COIN_IDS.values()),
-        "vs_currencies": "usd",
+    base_url = "https://data-api.binance.vision/api/v3/ticker/price"
+    symbol_map = {
+        "BTC": "BTCUSDT",
+        "ETH": "ETHUSDT",
+        "BNB": "BNBUSDT",
     }
 
     timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, params=params) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise RuntimeError(f"CoinGecko API 錯誤：{resp.status} {text[:200]}")
-            data = await resp.json()
+    results = {}
 
-    return {
-        "BTC": float(data["bitcoin"]["usd"]),
-        "ETH": float(data["ethereum"]["usd"]),
-        "BNB": float(data["binancecoin"]["usd"]),
-    }
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for coin, pair in symbol_map.items():
+            async with session.get(base_url, params={"symbol": pair}) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"Binance API 錯誤：{resp.status} {text[:200]}")
+                data = await resp.json()
+                results[coin] = float(data["price"])
+
+    return results
 
 
 async def check_percent_alerts(channel: discord.TextChannel, symbol: str, now: datetime.datetime, current_price: float):
@@ -248,7 +249,7 @@ async def check_breakout_alerts(channel: discord.TextChannel, symbol: str, curre
     last_price_bucket[symbol] = current_bucket
 
 
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=2)
 async def crypto_price_watch_task():
     await bot.wait_until_ready()
 
