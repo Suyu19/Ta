@@ -410,10 +410,10 @@ async def check_breakout_alerts(channel: discord.TextChannel, symbol: str, curre
 
     if current_bucket > previous_bucket:
         crossed_price = current_bucket * step
-        await channel.send(f"{symbol}突破 {crossed_price}！📉")
+        await channel.send(f"{symbol}突破 {crossed_price}！📈")
     elif current_bucket < previous_bucket:
         crossed_price = previous_bucket * step
-        await channel.send(f"{symbol}跌破{crossed_price}！📈")
+        await channel.send(f"{symbol}跌破{crossed_price}！📉")
 
     last_price_bucket[symbol] = current_bucket
 
