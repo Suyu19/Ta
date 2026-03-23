@@ -15,7 +15,7 @@ import json
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
-print("BOOT VERSION: 2026-03-21-crypto-alert-daily-summary-1", flush=True)
+print("BOOT VERSION: 2026-03-21-crypto-alert-daily-summary-customalert-1", flush=True)
 
 # =========================
 # 基本設定
@@ -103,6 +103,20 @@ last_percent_alert_at: dict[str, dict[str, datetime.datetime | None]] = {
     "BNB": {"15m_up": None, "15m_down": None, "1h_up": None, "1h_down": None},
 }
 
+# 使用者自訂價格提醒（記憶體保存，重啟後會消失）
+custom_price_alerts: dict[str, list[dict]] = {
+    "BTC": [],
+    "ETH": [],
+    "BNB": [],
+}
+
+# 上一次看到的價格，用來判斷是否穿越提醒價位
+last_seen_prices: dict[str, float | None] = {
+    "BTC": None,
+    "ETH": None,
+    "BNB": None,
+}
+
 # =========================
 # Sleep Check 狀態（不落地保存）
 # =========================
@@ -150,6 +164,13 @@ def should_send_cooldown(last_time: datetime.datetime | None, now: datetime.date
     if last_time is None:
         return True
     return (now - last_time).total_seconds() >= minutes * 60
+
+
+def normalize_coin_symbol(symbol: str) -> str | None:
+    s = symbol.strip().upper()
+    if s in {"BTC", "ETH", "BNB"}:
+        return s
+    return None
 
 
 async def fetch_crypto_prices():
@@ -418,6 +439,35 @@ async def check_breakout_alerts(channel: discord.TextChannel, symbol: str, curre
     last_price_bucket[symbol] = current_bucket
 
 
+async def check_custom_price_alerts(channel: discord.TextChannel, symbol: str, current_price: float):
+    prev_price = last_seen_prices[symbol]
+    alerts = custom_price_alerts[symbol]
+
+    if prev_price is None:
+        last_seen_prices[symbol] = current_price
+        return
+
+    for alert in alerts:
+        if alert["triggered"]:
+            continue
+
+        target = alert["price"]
+
+        crossed_up = prev_price < target <= current_price
+        crossed_down = prev_price > target >= current_price
+
+        if crossed_up or crossed_down:
+            alert["triggered"] = True
+            await channel.send(
+                f"@everyone 🚨 {symbol} 價格提醒\n"
+                f"{symbol} 已觸及你設定的價格：{target:,.2f}\n"
+                f"目前價格：{fmt_price(symbol, current_price)}",
+                allowed_mentions=_allowed_mentions_all(),
+            )
+
+    last_seen_prices[symbol] = current_price
+
+
 @tasks.loop(minutes=2)
 async def crypto_price_watch_task():
     await bot.wait_until_ready()
@@ -452,6 +502,7 @@ async def crypto_price_watch_task():
 
         await check_percent_alerts(channel, symbol, now, current_price)
         await check_breakout_alerts(channel, symbol, current_price)
+        await check_custom_price_alerts(channel, symbol, current_price)
 
 
 @crypto_price_watch_task.before_loop
@@ -935,7 +986,7 @@ async def on_ready():
 
 
 # =========================
-# 指令：exam / help / sleeptest / sleepcheck / price / dailytest
+# 指令
 # =========================
 
 @bot.command(name="sleep")
@@ -1040,6 +1091,75 @@ async def price_now(ctx: commands.Context):
     await ctx.send(msg)
 
 
+@bot.command(name="setalert")
+async def set_alert(ctx: commands.Context, coin: str, price: float):
+    symbol = normalize_coin_symbol(coin)
+    if symbol is None:
+        await ctx.send("❌ 只支援 BTC / ETH / BNB\n用法：`!setalert btc 70000`")
+        return
+
+    if price <= 0:
+        await ctx.send("❌ 價格必須大於 0")
+        return
+
+    alerts = custom_price_alerts[symbol]
+
+    for alert in alerts:
+        if abs(alert["price"] - price) < 1e-9 and not alert["triggered"]:
+            await ctx.send(f"⚠️ {symbol} {price:,.2f} 的提醒已經存在了。")
+            return
+
+    alerts.append({
+        "price": float(price),
+        "triggered": False,
+        "created_by": ctx.author.id,
+    })
+
+    alerts.sort(key=lambda x: x["price"])
+
+    await ctx.send(f"✅ 已設定 {symbol} 價格提醒：{price:,.2f}")
+
+
+@bot.command(name="alerts")
+async def list_alerts(ctx: commands.Context):
+    lines = ["📌 目前已設定的價格提醒："]
+    has_any = False
+
+    for symbol in ["BTC", "ETH", "BNB"]:
+        alerts = custom_price_alerts[symbol]
+        active_alerts = [a for a in alerts if not a["triggered"]]
+
+        if active_alerts:
+            has_any = True
+            lines.append(f"\n{symbol}：")
+            for idx, alert in enumerate(active_alerts, start=1):
+                lines.append(f"  {idx}. {alert['price']:,.2f}")
+
+    if not has_any:
+        await ctx.send("目前沒有任何未觸發的價格提醒。")
+        return
+
+    await ctx.send("\n".join(lines))
+
+
+@bot.command(name="delalert")
+async def delete_alert(ctx: commands.Context, coin: str, price: float):
+    symbol = normalize_coin_symbol(coin)
+    if symbol is None:
+        await ctx.send("❌ 只支援 BTC / ETH / BNB\n用法：`!delalert btc 70000`")
+        return
+
+    alerts = custom_price_alerts[symbol]
+
+    for i, alert in enumerate(alerts):
+        if abs(alert["price"] - price) < 1e-9 and not alert["triggered"]:
+            alerts.pop(i)
+            await ctx.send(f"🗑️ 已刪除 {symbol} 價格提醒：{price:,.2f}")
+            return
+
+    await ctx.send(f"❌ 找不到 {symbol} {price:,.2f} 的未觸發提醒。")
+
+
 @bot.command(name="dailytest")
 @commands.has_permissions(administrator=True)
 async def daily_test(ctx: commands.Context):
@@ -1060,7 +1180,10 @@ async def custom_help(ctx: commands.Context):
         "  help  顯示所有可用功能指令\n"
         "  exam  顯示期中考倒數\n"
         "  price  顯示 BTC / ETH / BNB 目前價格\n"
-        "  dailytest  測試每日幣圈摘要（管理員）\n\n"
+        "  dailytest  測試每日幣圈摘要（管理員）\n"
+        "  setalert <幣種> <價格>  設定價格提醒\n"
+        "  alerts  查看目前未觸發的價格提醒\n"
+        "  delalert <幣種> <價格>  刪除價格提醒\n\n"
         "  join   加入語音頻道陪你\n"
         "  bye   離開語音頻道\n\n"
         "  clear （數字） 清除當前頻道最近 X 則訊息\n\n"
@@ -1077,6 +1200,7 @@ async def custom_help(ctx: commands.Context):
         "  BTC / ETH / BNB：1 小時內漲跌超過 2% 提醒\n"
         "  BTC：每跨 1000 美元提醒\n"
         "  ETH：每跨 100 美元提醒\n"
+        "  自訂價格提醒觸發時會 @everyone\n"
         "  每天 19:00 自動發送每日幣圈摘要與 2 則重點新聞\n"
     )
     await ctx.send(msg)
@@ -1204,7 +1328,7 @@ async def play_audio(ctx: commands.Context):
         await ctx.send(f"我已經加入：{channel.name} 頻道囉，準備幫你播音樂～")
     else:
         if voice_client.channel.id != channel.id:
-            await voice_client.move_to(channel)
+            await ctx.voice_client.move_to(channel)
             await ctx.send(f"我換到：{channel.name} 頻道囉～")
 
     if not ctx.message.attachments:
