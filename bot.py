@@ -548,10 +548,10 @@ def build_ytdlp_options():
         "cachedir": False,
         "force_ipv4": True,
         "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"],
-            }
-        },
+    "youtube": {
+        "player_client": ["android", "web", "tv_simply"],
+    }
+},
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
