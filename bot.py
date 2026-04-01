@@ -573,7 +573,31 @@ async def get_stream_info(url: str):
     loop = asyncio.get_running_loop()
     ydl_opts = build_ytdlp_options()
 
+    print(f"[yt] start extract: {url}", flush=True)
+
     def _extract():
+        opts = {
+            "format": "bestaudio/best",
+            "noplaylist": True,
+            "quiet": True,
+            "nocheckcertificate": True,
+            "cachedir": False,
+            "force_ipv4": True,
+            "socket_timeout": 15,
+            "retries": 1,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "web", "tv_simply"],
+                }
+            },
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                )
+            },
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if "entries" in info:
@@ -583,7 +607,9 @@ async def get_stream_info(url: str):
                 "stream_url": info["url"],
             }
 
-    return await loop.run_in_executor(None, _extract)
+    result = await loop.run_in_executor(None, _extract)
+    print(f"[yt] extract done: {result['title']}", flush=True)
+    return result
 
 
 # =========================
@@ -859,9 +885,23 @@ async def play_next(ctx):
         else:
             raise RuntimeError("未知的 queue 類型")
 
+
     except Exception as e:
-        await ctx.send(f"❌ 取得音訊失敗：`{e}`\n（可能是 YouTube 驗證或雲端 IP 被擋）")
+
+        msg = str(e)
+
+        print(f"[yt] extract/play failed: {msg}", flush=True)
+
+        if "Sign in to confirm you’re not a bot" in msg or "Sign in to confirm you're not a bot" in msg:
+
+            await ctx.send("❌ YouTube 目前擋下播放請求，可能是 cookies 過期或雲端 IP 被判定異常。")
+
+        else:
+
+            await ctx.send(f"❌ 取得音訊失敗：`{e}`")
+
         asyncio.create_task(play_next(ctx))
+
         return
 
     def after_playing(error):
