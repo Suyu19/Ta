@@ -65,9 +65,9 @@ last_daily_summary_date: datetime.date | None = None
 
 TZ = ZoneInfo("Asia/Taipei")
 
-# 期中考期間
-EXAM_START = datetime.date(2026, 4, 20)
-EXAM_END = datetime.date(2026, 4, 24)
+# 期末考期間
+EXAM_START = datetime.date(2026, 6, 21)
+EXAM_END = datetime.date(2026, 6, 25)
 
 # Intents
 intents = discord.Intents.default()
@@ -953,17 +953,17 @@ async def countdown_task():
         today = now.date()
 
         if today == EXAM_START:
-            msg = "(4/20) 今天是期中考第一天！Fight！！💪📚"
+            msg = "(6/21) 今天是期末考第一天！Fight！！💪📚"
         elif EXAM_START < today < EXAM_END:
-            msg = f"({today.month}/{today.day}) 期中考進行中！加油！！🔥"
+            msg = f"({today.month}/{today.day}) 期末考進行中！加油！！🔥"
         elif today == EXAM_END:
-            msg = "(4/24) 今天是期中考最後一天！撐住！！🎯"
+            msg = "(6/25) 今天是期末考最後一天！撐住！！🎯"
         elif today > EXAM_END:
             days_after = (today - EXAM_END).days
-            msg = f"📘 期中考已經結束 {days_after} 天，辛苦了～🎉"
+            msg = f"📘 期末考已經結束 {days_after} 天，辛苦了～🎉"
         else:
             diff = (EXAM_START - today).days
-            msg = f"📘 期中考倒數：還剩 **{diff} 天**！（考試第一天：4/20）"
+            msg = f"📘 期末考倒數：還剩 **{diff} 天**！（考試第一天：6/21）"
 
         await channel.send(msg)
 
@@ -1096,24 +1096,23 @@ async def exam_countdown(ctx: commands.Context):
 
     if today < EXAM_START:
         days = (EXAM_START - today).days
-        msg = f"📘 距離期中考第一天（4/20）還有 **{days} 天**！"
+        msg = f"📘 距離期末考第一天（6/21）還有 **{days} 天**！"
     elif today == EXAM_START:
-        msg = "📘 今天是期中考第一天（4/20）！Fight！！🔥"
+        msg = "📘 今天是期末考第一天（6/21）！Fight！！🔥"
     elif EXAM_START < today < EXAM_END:
         day_no = (today - EXAM_START).days + 1
         left = (EXAM_END - today).days
         msg = (
-            f"📘 期中考進行中（第 **{day_no} 天**）！\n"
-            f"⏳ 距離最後一天（4/24）還有 **{left} 天**"
+            f"📘 期末考進行中（第 **{day_no} 天**）！\n"
+            f"⏳ 距離最後一天（6/25）還有 **{left} 天**"
         )
     elif today == EXAM_END:
-        msg = "📘 今天是期中考最後一天（4/24） 解脫了！"
+        msg = "📘 今天是期末考最後一天（6/25） 解脫了！"
     else:
         days_after = (today - EXAM_END).days
-        msg = f"🎉 期中考已結束 **{days_after} 天**，辛苦了～"
+        msg = f"🎉 期末考已結束 **{days_after} 天**，辛苦了～"
 
     await ctx.send(msg)
-
 
 @bot.command(name="price")
 async def price_now(ctx: commands.Context):
@@ -1218,7 +1217,7 @@ async def custom_help(ctx: commands.Context):
     msg = (
         "!後：\n"
         "  help  顯示所有可用功能指令\n"
-        "  exam  顯示期中考倒數\n"
+        "  exam  顯示期末考倒數\n"
         "  price  顯示 BTC / ETH / BNB 目前價格\n"
         "  dailytest  測試每日幣圈摘要（管理員）\n"
         "  setalert <幣種> <價格>  設定價格提醒\n"
