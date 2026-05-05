@@ -551,10 +551,10 @@ def build_ytdlp_options():
         "cachedir": False,
         "force_ipv4": True,
         "extractor_args": {
-    "youtube": {
-        "player_client": ["android", "web", "tv_simply"],
-    }
-},
+            "youtube": {
+                "player_client": ["ios", "default"],
+            }
+        },
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -590,7 +590,7 @@ async def get_stream_info(url: str):
             "retries": 1,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "web", "tv_simply"],
+                    "player_client": ["ios", "default"],
                 }
             },
             "http_headers": {
