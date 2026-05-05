@@ -1157,7 +1157,7 @@ async def start_giveaway(ctx: commands.Context):
     giveaway_participants.clear()
     giveaway_user_ids.clear()
 
-    await ctx.send("📢 **抽獎已經開始！**\n請在此留言「抽」即可參加，有標示 ⭕ 就算成功喔！")
+    await ctx.send("📢 **抽獎已經開始！**\n請在此留言包含「抽」字的內容即可參加，有標示 ⭕ 就算成功囉！\n 歡迎邀請朋友加入本群一起參加抽獎~")
 
 
 # 2. 監聽留言事件
@@ -1191,7 +1191,7 @@ async def giveaway_listener(message: discord.Message):
 
             # 傳送短暫的提示訊息告知他是第幾位，3秒後自動刪除，保持版面乾淨
             reply_msg = await message.reply(f"✅ 登記成功！你是第 **{len(giveaway_participants)}** 位參加者。")
-            await asyncio.sleep(3)
+            await asyncio.sleep(10)
             await reply_msg.delete()
         except Exception as e:
             print(f"抽獎反應發生錯誤：{e}", flush=True)
@@ -1219,7 +1219,7 @@ async def draw_winner(ctx: commands.Context):
 
     await ctx.send(
         f"🎉 **開獎囉！**\n"
-        f"恭喜 {winner.mention} 中獎了！ （本次共有 {total_participants} 人參加）\n"
+        f"恭喜 {winner.mention} 中獎了！ （本次共有 {total_participants} 人參加）\n "
 
     )
 
@@ -1341,7 +1341,7 @@ async def custom_help(ctx: commands.Context):
         "  自訂價格提醒觸發時會 @everyone\n"
         "  每天 19:00 自動發送每日幣圈摘要與 2 則重點新聞\n\n"
         
-        "🎁 抽獎系統 "
+        "🎁 抽獎系統\n "
         " !gstart 開啟抽獎並清空舊名單\n"
         " !roll  從留言「抽」的人中隨機抽出一名幸運兒並結束抽獎\n"
         " !gclear  - 手動清空目前的抽獎名單"
