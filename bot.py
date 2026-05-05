@@ -3,6 +3,7 @@ from discord.ext import commands, tasks
 import asyncio
 import datetime
 import os
+import random
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import yt_dlp
@@ -31,6 +32,8 @@ SEND_MINUTE = int(os.getenv("SEND_MINUTE", "0"))
 
 SLEEP_CHANNEL_ID_STR = os.getenv("SLEEP_CHANNEL_ID")
 CRYPTO_ALERT_CHANNEL_ID_STR = os.getenv("CRYPTO_ALERT_CHANNEL_ID")
+GIVEAWAY_CHANNEL_ID_STR = os.getenv("GIVEAWAY_CHANNEL_ID")
+GIVEAWAY_CHANNEL_ID = int(GIVEAWAY_CHANNEL_ID_STR) if GIVEAWAY_CHANNEL_ID_STR else None
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN 環境變數沒有設定！")
@@ -1129,6 +1132,99 @@ async def price_now(ctx: commands.Context):
     )
     await ctx.send(msg)
 
+
+# =========================
+# 自動化抽獎系統
+# =========================
+
+# 用來記錄抽獎狀態與名單的變數
+is_giveaway_active = False
+giveaway_participants = []
+giveaway_user_ids = set()
+
+
+# 1. 開始抽獎指令
+@bot.command(name="gstart")
+@commands.has_permissions(administrator=True)  # 限制只有管理員能開啟
+async def start_giveaway(ctx: commands.Context):
+    global is_giveaway_active, giveaway_participants, giveaway_user_ids
+
+    # 啟動抽獎並確保名單是乾淨的
+    is_giveaway_active = True
+    giveaway_participants.clear()
+    giveaway_user_ids.clear()
+
+    await ctx.send("📢 **抽獎已經開始！**\n請在此留言「抽」即可參加，有標示 ⭕ 就算成功喔！")
+
+
+# 2. 監聽留言事件
+@bot.listen('on_message')
+async def giveaway_listener(message: discord.Message):
+    global is_giveaway_active
+
+    # 如果抽獎沒開放，或者是由機器人發出的訊息，直接忽略
+    if not is_giveaway_active or message.author.bot:
+        return
+
+    # 確認是否在指定的抽獎頻道 (如果有設定的話)
+    if GIVEAWAY_CHANNEL_ID and message.channel.id != GIVEAWAY_CHANNEL_ID:
+        return
+
+    # 檢查留言是否包含「抽」
+    if "抽" in message.content:
+        user_id = message.author.id
+
+        # 防呆機制：如果同一個人重複留言，就不會重複加入名單
+        if user_id in giveaway_user_ids:
+            return
+
+        # 加入抽獎池
+        giveaway_user_ids.add(user_id)
+        giveaway_participants.append(message.author)
+
+        # 加上 ⭕ 反應，並短暫回覆序號
+        try:
+            await message.add_reaction("⭕")
+
+            # 傳送短暫的提示訊息告知他是第幾位，3秒後自動刪除，保持版面乾淨
+            reply_msg = await message.reply(f"✅ 登記成功！你是第 **{len(giveaway_participants)}** 位參加者。")
+            await asyncio.sleep(3)
+            await reply_msg.delete()
+        except Exception as e:
+            print(f"抽獎反應發生錯誤：{e}", flush=True)
+
+
+# 3. 抽出得獎者並結束抽獎指令
+@bot.command(name="roll")
+@commands.has_permissions(administrator=True)  # 限制只有管理員能開獎
+async def draw_winner(ctx: commands.Context):
+    global is_giveaway_active, giveaway_participants, giveaway_user_ids
+
+    if not is_giveaway_active:
+        await ctx.send("⚠️ 目前沒有正在進行的抽獎喔！請先使用 `!gstart` 開始抽獎。")
+        return
+
+    if not giveaway_participants:
+        await ctx.send("❌ 目前沒有任何人參加抽獎喔！")
+        # 如果沒人參加但你想關閉抽獎，也可以把下面這行加上去
+        # is_giveaway_active = False
+        return
+
+    # 隨機抽取一位
+    winner = random.choice(giveaway_participants)
+    total_participants = len(giveaway_participants)
+
+    await ctx.send(
+        f"🎉 **開獎囉！**\n"
+        f"恭喜 {winner.mention} 中獎了！ （本次共有 {total_participants} 人參加）\n"
+
+    )
+
+    # 結束抽獎並清空名單
+    is_giveaway_active = False
+    giveaway_participants.clear()
+    giveaway_user_ids.clear()
+    await ctx.send("🛑 本次抽獎已結束，名單已自動歸零。")
 
 @bot.command(name="setalert")
 async def set_alert(ctx: commands.Context, coin: str, price: float):
