@@ -1330,13 +1330,19 @@ async def custom_help(ctx: commands.Context):
         "  nosleep 提前回報不睡覺(空格原因直接打)\n"
         "  sleeptest   立刻發出睡覺回報按鈕（測試）\n"
         "  sleepcheck  立刻做一次未回報檢查（測試）\n\n"
-        "【自動提醒】\n"
+        "【自動提醒】\n\n"
         "  BTC / ETH / BNB：15 分鐘內漲跌超過 1% 提醒\n"
         "  BTC / ETH / BNB：1 小時內漲跌超過 2% 提醒\n"
         "  BTC：每跨 1000 美元提醒\n"
         "  ETH：每跨 100 美元提醒\n"
         "  自訂價格提醒觸發時會 @everyone\n"
-        "  每天 19:00 自動發送每日幣圈摘要與 2 則重點新聞\n"
+        "  每天 19:00 自動發送每日幣圈摘要與 2 則重點新聞\n\n"
+        
+        "🎁 抽獎系統 "
+        " !gstart 開啟抽獎並清空舊名單\n"
+        " !roll  從留言「抽」的人中隨機抽出一名幸運兒並結束抽獎\n"
+        " !gclear  - 手動清空目前的抽獎名單"
+
     )
     await ctx.send(msg)
 
