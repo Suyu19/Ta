@@ -889,6 +889,7 @@ async def play_next(ctx):
             raise RuntimeError("未知的 queue 類型")
 
 
+
     except Exception as e:
 
         msg = str(e)
@@ -901,11 +902,13 @@ async def play_next(ctx):
 
         else:
 
-            await ctx.send(f"❌ 取得音訊失敗：`{e}`")
+            # 這裡加上 [:1500] 來限制字數，避免超過 Discord 的 2000 字限制！
 
-        asyncio.create_task(play_next(ctx))
+            await ctx.send(f"❌ 取得音訊失敗：\n```\n{msg[:1500]}\n```")
 
-        return
+    asyncio.create_task(play_next(ctx))
+
+    return
 
     def after_playing(error):
         if error:
