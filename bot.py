@@ -16,7 +16,7 @@ import json
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
-print("BOOT VERSION: 2026-03-21-crypto-alert-daily-summary-customalert-1", flush=True)
+print("BOOT VERSION: 2026-06-24-grad-crypto-accounting-musicfix-1", flush=True)
 
 # =========================
 # 基本設定
@@ -68,9 +68,8 @@ last_daily_summary_date: datetime.date | None = None
 
 TZ = ZoneInfo("Asia/Taipei")
 
-# 期末考期間
-EXAM_START = datetime.date(2026, 6, 21)
-EXAM_END = datetime.date(2026, 6, 25)
+# 研究所推甄報名資料提交日
+GRAD_APP_DATE = datetime.date(2026, 9, 25)
 
 # Intents
 intents = discord.Intents.default()
@@ -96,14 +95,16 @@ price_history: dict[str, list[tuple[datetime.datetime, float]]] = {
 }
 
 last_price_bucket = {
-    "BTC": None,   # 每 1000
-    "ETH": None,   # 每 100
+    "BTC": None,  # 每 1000
+    "ETH": None,  # 每 100
 }
 
-last_percent_alert_at: dict[str, dict[str, datetime.datetime | None]] = {
-    "BTC": {"15m_up": None, "15m_down": None, "1h_up": None, "1h_down": None},
-    "ETH": {"15m_up": None, "15m_down": None, "1h_up": None, "1h_down": None},
-    "BNB": {"15m_up": None, "15m_down": None, "1h_up": None, "1h_down": None},
+# 紀錄上一次 3% 波動通知的時間與價格
+# 規則：一般情況比較「最近 1 小時」；通知後 1 小時內，改成比較「上次通知價格」。
+last_percent_alert_state: dict[str, dict[str, datetime.datetime | float | None]] = {
+    "BTC": {"time": None, "price": None},
+    "ETH": {"time": None, "price": None},
+    "BNB": {"time": None, "price": None},
 }
 
 # 使用者自訂價格提醒（記憶體保存，重啟後會消失）
@@ -119,6 +120,75 @@ last_seen_prices: dict[str, float | None] = {
     "ETH": None,
     "BNB": None,
 }
+
+# =========================
+# 記帳系統設定（JSON 保存）
+# =========================
+
+ACCOUNTING_FILE = "accounting_data.json"
+
+# user_id(str) -> {"balance": float, "records": [{"type": str, "amount": float, "reason": str, "time": str, "balance_after": float}]}
+accounting_data: dict[str, dict] = {}
+
+
+def load_accounting_data():
+    global accounting_data
+    if not os.path.exists(ACCOUNTING_FILE):
+        accounting_data = {}
+        return
+    try:
+        with open(ACCOUNTING_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        accounting_data = data if isinstance(data, dict) else {}
+    except Exception as e:
+        print(f"[accounting] 載入記帳資料失敗：{e}", flush=True)
+        accounting_data = {}
+
+
+def save_accounting_data():
+    try:
+        with open(ACCOUNTING_FILE, "w", encoding="utf-8") as f:
+            json.dump(accounting_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[accounting] 儲存記帳資料失敗：{e}", flush=True)
+
+
+def get_user_account(user_id: int):
+    key = str(user_id)
+    if key not in accounting_data:
+        accounting_data[key] = {"balance": 0.0, "records": []}
+    return accounting_data[key]
+
+
+def fmt_money(amount: float) -> str:
+    if float(amount).is_integer():
+        return f"{int(amount):,}"
+    return f"{amount:,.2f}"
+
+
+def add_accounting_record(user_id: int, record_type: str, amount: float, reason: str):
+    account = get_user_account(user_id)
+    if record_type == "income":
+        account["balance"] += amount
+    elif record_type == "expense":
+        account["balance"] -= amount
+    else:
+        raise ValueError("record_type 必須是 income 或 expense")
+
+    record = {
+        "type": record_type,
+        "amount": amount,
+        "reason": reason[:200],
+        "time": datetime.datetime.now(TZ).isoformat(timespec="minutes"),
+        "balance_after": account["balance"],
+    }
+    account["records"].append(record)
+    account["records"] = account["records"][-200:]
+    save_accounting_data()
+    return record, account["balance"]
+
+
+load_accounting_data()
 
 # =========================
 # Sleep Check 狀態（不落地保存）
@@ -354,14 +424,27 @@ async def check_percent_alerts(channel: discord.TextChannel, symbol: str, now: d
     if not history:
         return
 
-    price_15m = None
-    target_15m = now - datetime.timedelta(minutes=15)
-    for ts, price in history:
-        if ts <= target_15m:
-            price_15m = price
-        else:
-            break
+    state = last_percent_alert_state[symbol]
+    last_time = state["time"]
+    last_price = state["price"]
 
+    # 通知後 1 小時內：除非相較「上次通知價格」又漲跌 3% 以上，否則不再通知。
+    if isinstance(last_time, datetime.datetime) and isinstance(last_price, (int, float)):
+        if (now - last_time).total_seconds() <= 3600:
+            change_from_last_alert = pct_change(float(last_price), current_price)
+            if abs(change_from_last_alert) >= 3.0:
+                direction = "上漲" if change_from_last_alert > 0 else "下跌"
+                await channel.send(
+                    f"@everyone 🚨 **{symbol} 劇烈波動提醒（連續觸發）**\n"
+                    f"目前價格：{fmt_price(symbol, current_price)}\n"
+                    f"相較上次通知（{last_time.strftime('%H:%M')}）又{direction}：{abs(change_from_last_alert):.2f}%",
+                    allowed_mentions=_allowed_mentions_all(),
+                )
+                state["time"] = now
+                state["price"] = current_price
+            return
+
+    # 一般情況：比較約 1 小時前價格，只有 1 小時內漲跌 3% 以上才通知。
     price_1h = None
     target_1h = now - datetime.timedelta(hours=1)
     for ts, price in history:
@@ -370,51 +453,20 @@ async def check_percent_alerts(channel: discord.TextChannel, symbol: str, now: d
         else:
             break
 
-    if price_15m is not None:
-        change_15m = pct_change(price_15m, current_price)
+    if price_1h is None:
+        return
 
-        if change_15m >= 1.0:
-            key = "15m_up"
-            if should_send_cooldown(last_percent_alert_at[symbol][key], now, 15):
-                await channel.send(
-                    f"🚨 {symbol} 劇烈波動提醒\n"
-                    f"目前價格：{fmt_price(symbol, current_price)}\n"
-                    f"15 分鐘內上漲：+{change_15m:.2f}%"
-                )
-                last_percent_alert_at[symbol][key] = now
-
-        elif change_15m <= -1.0:
-            key = "15m_down"
-            if should_send_cooldown(last_percent_alert_at[symbol][key], now, 15):
-                await channel.send(
-                    f"🚨 {symbol} 劇烈波動提醒\n"
-                    f"目前價格：{fmt_price(symbol, current_price)}\n"
-                    f"15 分鐘內下跌：{change_15m:.2f}%"
-                )
-                last_percent_alert_at[symbol][key] = now
-
-    if price_1h is not None:
-        change_1h = pct_change(price_1h, current_price)
-
-        if change_1h >= 2.0:
-            key = "1h_up"
-            if should_send_cooldown(last_percent_alert_at[symbol][key], now, 30):
-                await channel.send(
-                    f"🚨 {symbol} 劇烈波動提醒\n"
-                    f"目前價格：{fmt_price(symbol, current_price)}\n"
-                    f"1 小時內上漲：+{change_1h:.2f}%"
-                )
-                last_percent_alert_at[symbol][key] = now
-
-        elif change_1h <= -2.0:
-            key = "1h_down"
-            if should_send_cooldown(last_percent_alert_at[symbol][key], now, 30):
-                await channel.send(
-                    f"🚨 {symbol} 劇烈波動提醒\n"
-                    f"目前價格：{fmt_price(symbol, current_price)}\n"
-                    f"1 小時內下跌：{change_1h:.2f}%"
-                )
-                last_percent_alert_at[symbol][key] = now
+    change_1h = pct_change(price_1h, current_price)
+    if abs(change_1h) >= 3.0:
+        direction = "上漲" if change_1h > 0 else "下跌"
+        await channel.send(
+            f"@everyone 🚨 **{symbol} 劇烈波動提醒**\n"
+            f"目前價格：{fmt_price(symbol, current_price)}\n"
+            f"1 小時內{direction}：{abs(change_1h):.2f}%",
+            allowed_mentions=_allowed_mentions_all(),
+        )
+        state["time"] = now
+        state["price"] = current_price
 
 
 async def check_breakout_alerts(channel: discord.TextChannel, symbol: str, current_price: float):
@@ -504,7 +556,9 @@ async def crypto_price_watch_task():
             history.pop(0)
 
         await check_percent_alerts(channel, symbol, now, current_price)
-        await check_breakout_alerts(channel, symbol, current_price)
+        # 使用者要求自動價格波動通知只保留「1 小時 3%」規則，
+        # 因此不再啟用 BTC 每 1000 / ETH 每 100 的突破跌破通知。
+        # await check_breakout_alerts(channel, symbol, current_price)
         await check_custom_price_alerts(channel, symbol, current_price)
 
 
@@ -888,27 +942,18 @@ async def play_next(ctx):
         else:
             raise RuntimeError("未知的 queue 類型")
 
-
-
     except Exception as e:
-
         msg = str(e)
-
         print(f"[yt] extract/play failed: {msg}", flush=True)
 
         if "Sign in to confirm you’re not a bot" in msg or "Sign in to confirm you're not a bot" in msg:
-
             await ctx.send("❌ YouTube 目前擋下播放請求，可能是 cookies 過期或雲端 IP 被判定異常。")
-
         else:
-
-            # 這裡加上 [:1500] 來限制字數，避免超過 Discord 的 2000 字限制！
-
             await ctx.send(f"❌ 取得音訊失敗：\n```\n{msg[:1500]}\n```")
 
-    asyncio.create_task(play_next(ctx))
-
-    return
+        # 這首失敗時跳下一首，而不是讓整個播放佇列卡住。
+        asyncio.create_task(play_next(ctx))
+        return
 
     def after_playing(error):
         if error:
@@ -958,18 +1003,14 @@ async def countdown_task():
         now = datetime.datetime.now(TZ)
         today = now.date()
 
-        if today == EXAM_START:
-            msg = "(6/21) 今天是期末考第一天！Fight！！💪📚"
-        elif EXAM_START < today < EXAM_END:
-            msg = f"({today.month}/{today.day}) 期末考進行中！加油！！🔥"
-        elif today == EXAM_END:
-            msg = "(6/25) 今天是期末考最後一天！撐住！！🎯"
-        elif today > EXAM_END:
-            days_after = (today - EXAM_END).days
-            msg = f"📘 期末考已經結束 {days_after} 天，辛苦了～🎉"
+        if today < GRAD_APP_DATE:
+            diff = (GRAD_APP_DATE - today).days
+            msg = f"🎓 研究所推甄報名資料提交倒數：還剩 **{diff} 天**！（提交日：9/25）"
+        elif today == GRAD_APP_DATE:
+            msg = "🎓 今天是研究所推甄報名資料提交日（9/25）！記得確認資料都上傳完成！"
         else:
-            diff = (EXAM_START - today).days
-            msg = f"📘 期末考倒數：還剩 **{diff} 天**！（考試第一天：6/21）"
+            days_after = (today - GRAD_APP_DATE).days
+            msg = f"🎓 研究所推甄報名資料提交日已過 **{days_after} 天**。"
 
         await channel.send(msg)
 
@@ -1096,29 +1137,21 @@ async def early_no_sleep(ctx: commands.Context, *, reason: str = ""):
     )
 
 
-@bot.command(name="exam")
-async def exam_countdown(ctx: commands.Context):
+@bot.command(name="grad", aliases=["exam"])
+async def grad_countdown(ctx: commands.Context):
     today = datetime.datetime.now(TZ).date()
 
-    if today < EXAM_START:
-        days = (EXAM_START - today).days
-        msg = f"📘 距離期末考第一天（6/21）還有 **{days} 天**！"
-    elif today == EXAM_START:
-        msg = "📘 今天是期末考第一天（6/21）！Fight！！🔥"
-    elif EXAM_START < today < EXAM_END:
-        day_no = (today - EXAM_START).days + 1
-        left = (EXAM_END - today).days
-        msg = (
-            f"📘 期末考進行中（第 **{day_no} 天**）！\n"
-            f"⏳ 距離最後一天（6/25）還有 **{left} 天**"
-        )
-    elif today == EXAM_END:
-        msg = "📘 今天是期末考最後一天（6/25） 解脫了！"
+    if today < GRAD_APP_DATE:
+        days = (GRAD_APP_DATE - today).days
+        msg = f"🎓 距離研究所推甄報名資料提交日（9/25）還有 **{days} 天**！"
+    elif today == GRAD_APP_DATE:
+        msg = "🎓 今天是研究所推甄報名資料提交日（9/25）！記得確認資料都上傳完成！"
     else:
-        days_after = (today - EXAM_END).days
-        msg = f"🎉 期末考已結束 **{days_after} 天**，辛苦了～"
+        days_after = (today - GRAD_APP_DATE).days
+        msg = f"🎓 研究所推甄報名資料提交日已過 **{days_after} 天**。"
 
     await ctx.send(msg)
+
 
 @bot.command(name="price")
 async def price_now(ctx: commands.Context):
@@ -1157,7 +1190,8 @@ async def start_giveaway(ctx: commands.Context):
     giveaway_participants.clear()
     giveaway_user_ids.clear()
 
-    await ctx.send("📢 **抽獎已經開始！**\n請在此留言包含「抽」字的內容即可參加，有標示 ⭕ 就算成功囉！\n 歡迎邀請朋友加入本群一起參加抽獎~")
+    await ctx.send(
+        "📢 **抽獎已經開始！**\n請在此留言包含「抽」字的內容即可參加，有標示 ⭕ 就算成功囉！\n 歡迎邀請朋友加入本群一起參加抽獎~")
 
 
 # 2. 監聽留言事件
@@ -1228,6 +1262,7 @@ async def draw_winner(ctx: commands.Context):
     giveaway_participants.clear()
     giveaway_user_ids.clear()
     await ctx.send("🛑 本次抽獎已結束，名單已自動歸零。")
+
 
 @bot.command(name="setalert")
 async def set_alert(ctx: commands.Context, coin: str, price: float):
@@ -1311,17 +1346,108 @@ async def daily_test(ctx: commands.Context):
     await ctx.send(msg)
 
 
+# =========================
+# 記帳指令
+# =========================
+
+@bot.command(name="income")
+async def add_income(ctx: commands.Context, amount: float, *, reason: str = ""):
+    reason = reason.strip() or "未填寫"
+    if amount <= 0:
+        await ctx.send("❌ 收入金額必須大於 0。用法：`!income 1000 打工薪水`")
+        return
+
+    record, balance = add_accounting_record(ctx.author.id, "income", amount, reason)
+    await ctx.send(
+        f"✅ 已記錄收入：+{fmt_money(amount)}\n"
+        f"事由：{record['reason']}\n"
+        f"目前餘額：{fmt_money(balance)}"
+    )
+
+
+@bot.command(name="expense")
+async def add_expense(ctx: commands.Context, amount: float, *, reason: str = ""):
+    reason = reason.strip() or "未填寫"
+    if amount <= 0:
+        await ctx.send("❌ 支出金額必須大於 0。用法：`!expense 120 午餐`")
+        return
+
+    record, balance = add_accounting_record(ctx.author.id, "expense", amount, reason)
+    await ctx.send(
+        f"✅ 已記錄支出：-{fmt_money(amount)}\n"
+        f"事由：{record['reason']}\n"
+        f"目前餘額：{fmt_money(balance)}"
+    )
+
+
+@bot.command(name="setbalance")
+async def set_balance(ctx: commands.Context, amount: float):
+    account = get_user_account(ctx.author.id)
+    account["balance"] = float(amount)
+    account["records"].append({
+        "type": "setbalance",
+        "amount": float(amount),
+        "reason": "手動設定餘額",
+        "time": datetime.datetime.now(TZ).isoformat(timespec="minutes"),
+        "balance_after": float(amount),
+    })
+    account["records"] = account["records"][-200:]
+    save_accounting_data()
+    await ctx.send(f"✅ 已手動設定餘額為：{fmt_money(amount)}")
+
+
+@bot.command(name="balance")
+async def show_balance(ctx: commands.Context):
+    account = get_user_account(ctx.author.id)
+    await ctx.send(f"💰 目前餘額：{fmt_money(account['balance'])}")
+
+
+@bot.command(name="records")
+async def show_records(ctx: commands.Context, count: int = 5):
+    account = get_user_account(ctx.author.id)
+    records = account["records"][-max(1, min(count, 10)):]
+
+    if not records:
+        await ctx.send("目前沒有記帳紀錄。")
+        return
+
+    lines = [f"📒 最近 {len(records)} 筆記帳紀錄："]
+    for record in reversed(records):
+        record_type = record.get("type")
+        if record_type == "income":
+            type_text = "收入"
+            sign = "+"
+        elif record_type == "expense":
+            type_text = "支出"
+            sign = "-"
+        else:
+            type_text = "設定餘額"
+            sign = ""
+
+        lines.append(
+            f"{record.get('time', '')}｜{type_text} {sign}{fmt_money(float(record.get('amount', 0)))}｜"
+            f"{record.get('reason', '未填寫')}｜餘額 {fmt_money(float(record.get('balance_after', 0)))}"
+        )
+
+    await ctx.send("\n".join(lines))
+
+
 @bot.command(name="help")
 async def custom_help(ctx: commands.Context):
     msg = (
         "!後：\n"
         "  help  顯示所有可用功能指令\n"
-        "  exam  顯示期末考倒數\n"
+        "  grad  顯示研究所推甄報名資料提交倒數（exam 也可用）\n"
         "  price  顯示 BTC / ETH / BNB 目前價格\n"
         "  dailytest  測試每日幣圈摘要（管理員）\n"
         "  setalert <幣種> <價格>  設定價格提醒\n"
         "  alerts  查看目前未觸發的價格提醒\n"
         "  delalert <幣種> <價格>  刪除價格提醒\n\n"
+        "  income <金額> <事由>  新增收入，例如：!income 1000 打工薪水\n"
+        "  expense <金額> <事由>  新增支出，例如：!expense 120 午餐\n"
+        "  setbalance <金額>  手動設定餘額\n"
+        "  balance  查看目前餘額\n"
+        "  records [數量]  查看最近記帳紀錄，最多 10 筆\n\n"
         "  join   加入語音頻道陪你\n"
         "  bye   離開語音頻道\n\n"
         "  clear （數字） 清除當前頻道最近 X 則訊息\n\n"
@@ -1334,13 +1460,11 @@ async def custom_help(ctx: commands.Context):
         "  sleeptest   立刻發出睡覺回報按鈕（測試）\n"
         "  sleepcheck  立刻做一次未回報檢查（測試）\n\n"
         "【自動提醒】\n\n"
-        "  BTC / ETH / BNB：15 分鐘內漲跌超過 1% 提醒\n"
-        "  BTC / ETH / BNB：1 小時內漲跌超過 2% 提醒\n"
-        "  BTC：每跨 1000 美元提醒\n"
-        "  ETH：每跨 100 美元提醒\n"
+        "  BTC / ETH / BNB：1 小時內漲跌超過 3% 會 @everyone 提醒\n"
+        "  通知後 1 小時內，只有相較上次通知價格又漲跌 3% 才會再次提醒\n"
         "  自訂價格提醒觸發時會 @everyone\n"
         "  每天 19:00 自動發送每日幣圈摘要與 2 則重點新聞\n\n"
-        
+
         "🎁 抽獎系統\n "
         " !gstart 開啟抽獎並清空舊名單\n"
         " !roll  從留言「抽」的人中隨機抽出一名幸運兒並結束抽獎\n"
