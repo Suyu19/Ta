@@ -16,7 +16,7 @@ import json
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
-print("BOOT VERSION: 2026-06-24-grad-crypto-accounting-musicfix-1", flush=True)
+print("BOOT VERSION: 2026-06-24-grad-crypto-accounting-two-users-1", flush=True)
 
 # =========================
 # 基本設定
@@ -126,15 +126,45 @@ last_seen_prices: dict[str, float | None] = {
 # =========================
 
 ACCOUNTING_FILE = "accounting_data.json"
+ACCOUNTING_ACCOUNTS = ("suyu", "gary")
 
-# user_id(str) -> {"balance": float, "records": [{"type": str, "amount": float, "reason": str, "time": str, "balance_after": float}]}
+# 帳戶名稱 -> {
+#   "balance": float,
+#   "records": [
+#       {
+#           "type": str,
+#           "amount": float,
+#           "reason": str,
+#           "time": str,
+#           "balance_after": float,
+#           "operator_id": int,
+#           "operator_name": str,
+#       }
+#   ]
+# }
 accounting_data: dict[str, dict] = {}
+
+
+def normalize_account_name(name: str) -> str | None:
+    key = name.strip().lower()
+    if key in ACCOUNTING_ACCOUNTS:
+        return key
+    return None
+
+
+def ensure_accounting_accounts():
+    for account_name in ACCOUNTING_ACCOUNTS:
+        if account_name not in accounting_data or not isinstance(accounting_data[account_name], dict):
+            accounting_data[account_name] = {"balance": 0.0, "records": []}
+        accounting_data[account_name].setdefault("balance", 0.0)
+        accounting_data[account_name].setdefault("records", [])
 
 
 def load_accounting_data():
     global accounting_data
     if not os.path.exists(ACCOUNTING_FILE):
         accounting_data = {}
+        ensure_accounting_accounts()
         return
     try:
         with open(ACCOUNTING_FILE, "r", encoding="utf-8") as f:
@@ -143,9 +173,11 @@ def load_accounting_data():
     except Exception as e:
         print(f"[accounting] 載入記帳資料失敗：{e}", flush=True)
         accounting_data = {}
+    ensure_accounting_accounts()
 
 
 def save_accounting_data():
+    ensure_accounting_accounts()
     try:
         with open(ACCOUNTING_FILE, "w", encoding="utf-8") as f:
             json.dump(accounting_data, f, ensure_ascii=False, indent=2)
@@ -153,11 +185,12 @@ def save_accounting_data():
         print(f"[accounting] 儲存記帳資料失敗：{e}", flush=True)
 
 
-def get_user_account(user_id: int):
-    key = str(user_id)
-    if key not in accounting_data:
-        accounting_data[key] = {"balance": 0.0, "records": []}
-    return accounting_data[key]
+def get_account(account_name: str):
+    normalized = normalize_account_name(account_name)
+    if normalized is None:
+        raise ValueError("帳戶只支援 suyu 或 gary")
+    ensure_accounting_accounts()
+    return accounting_data[normalized]
 
 
 def fmt_money(amount: float) -> str:
@@ -166,8 +199,12 @@ def fmt_money(amount: float) -> str:
     return f"{amount:,.2f}"
 
 
-def add_accounting_record(user_id: int, record_type: str, amount: float, reason: str):
-    account = get_user_account(user_id)
+def add_accounting_record(account_name: str, record_type: str, amount: float, reason: str, operator):
+    account_key = normalize_account_name(account_name)
+    if account_key is None:
+        raise ValueError("帳戶只支援 suyu 或 gary")
+
+    account = get_account(account_key)
     if record_type == "income":
         account["balance"] += amount
     elif record_type == "expense":
@@ -181,6 +218,8 @@ def add_accounting_record(user_id: int, record_type: str, amount: float, reason:
         "reason": reason[:200],
         "time": datetime.datetime.now(TZ).isoformat(timespec="minutes"),
         "balance_after": account["balance"],
+        "operator_id": operator.id,
+        "operator_name": str(operator),
     }
     account["records"].append(record)
     account["records"] = account["records"][-200:]
@@ -1350,39 +1389,76 @@ async def daily_test(ctx: commands.Context):
 # 記帳指令
 # =========================
 
+ACCOUNT_USAGE_TEXT = "帳戶只支援 `suyu` / `gary`。用法：`!income suyu 1000 打工薪水`"
+
+
+def format_account_record_line(record: dict) -> str:
+    record_type = record.get("type")
+    if record_type == "income":
+        type_text = "收入"
+        sign = "+"
+    elif record_type == "expense":
+        type_text = "支出"
+        sign = "-"
+    else:
+        type_text = "設定餘額"
+        sign = ""
+
+    operator_name = record.get("operator_name", "未知操作者")
+    return (
+        f"{record.get('time', '')}｜{type_text} {sign}{fmt_money(float(record.get('amount', 0)))}｜"
+        f"{record.get('reason', '未填寫')}｜餘額 {fmt_money(float(record.get('balance_after', 0)))}｜操作：{operator_name}"
+    )
+
+
 @bot.command(name="income")
-async def add_income(ctx: commands.Context, amount: float, *, reason: str = ""):
-    reason = reason.strip() or "未填寫"
-    if amount <= 0:
-        await ctx.send("❌ 收入金額必須大於 0。用法：`!income 1000 打工薪水`")
+async def add_income(ctx: commands.Context, account_name: str, amount: float, *, reason: str = ""):
+    account_key = normalize_account_name(account_name)
+    if account_key is None:
+        await ctx.send(f"❌ {ACCOUNT_USAGE_TEXT}")
         return
 
-    record, balance = add_accounting_record(ctx.author.id, "income", amount, reason)
+    reason = reason.strip() or "未填寫"
+    if amount <= 0:
+        await ctx.send("❌ 收入金額必須大於 0。用法：`!income suyu 1000 打工薪水`")
+        return
+
+    record, balance = add_accounting_record(account_key, "income", amount, reason, ctx.author)
     await ctx.send(
-        f"✅ 已記錄收入：+{fmt_money(amount)}\n"
+        f"✅ 已記錄 **{account_key}** 收入：+{fmt_money(amount)}\n"
         f"事由：{record['reason']}\n"
-        f"目前餘額：{fmt_money(balance)}"
+        f"{account_key} 目前餘額：{fmt_money(balance)}"
     )
 
 
 @bot.command(name="expense")
-async def add_expense(ctx: commands.Context, amount: float, *, reason: str = ""):
-    reason = reason.strip() or "未填寫"
-    if amount <= 0:
-        await ctx.send("❌ 支出金額必須大於 0。用法：`!expense 120 午餐`")
+async def add_expense(ctx: commands.Context, account_name: str, amount: float, *, reason: str = ""):
+    account_key = normalize_account_name(account_name)
+    if account_key is None:
+        await ctx.send(f"❌ {ACCOUNT_USAGE_TEXT}")
         return
 
-    record, balance = add_accounting_record(ctx.author.id, "expense", amount, reason)
+    reason = reason.strip() or "未填寫"
+    if amount <= 0:
+        await ctx.send("❌ 支出金額必須大於 0。用法：`!expense gary 120 午餐`")
+        return
+
+    record, balance = add_accounting_record(account_key, "expense", amount, reason, ctx.author)
     await ctx.send(
-        f"✅ 已記錄支出：-{fmt_money(amount)}\n"
+        f"✅ 已記錄 **{account_key}** 支出：-{fmt_money(amount)}\n"
         f"事由：{record['reason']}\n"
-        f"目前餘額：{fmt_money(balance)}"
+        f"{account_key} 目前餘額：{fmt_money(balance)}"
     )
 
 
 @bot.command(name="setbalance")
-async def set_balance(ctx: commands.Context, amount: float):
-    account = get_user_account(ctx.author.id)
+async def set_balance(ctx: commands.Context, account_name: str, amount: float):
+    account_key = normalize_account_name(account_name)
+    if account_key is None:
+        await ctx.send("❌ 帳戶只支援 `suyu` / `gary`。用法：`!setbalance suyu 5000`")
+        return
+
+    account = get_account(account_key)
     account["balance"] = float(amount)
     account["records"].append({
         "type": "setbalance",
@@ -1390,44 +1466,66 @@ async def set_balance(ctx: commands.Context, amount: float):
         "reason": "手動設定餘額",
         "time": datetime.datetime.now(TZ).isoformat(timespec="minutes"),
         "balance_after": float(amount),
+        "operator_id": ctx.author.id,
+        "operator_name": str(ctx.author),
     })
     account["records"] = account["records"][-200:]
     save_accounting_data()
-    await ctx.send(f"✅ 已手動設定餘額為：{fmt_money(amount)}")
+    await ctx.send(f"✅ 已手動設定 **{account_key}** 餘額為：{fmt_money(amount)}")
 
 
 @bot.command(name="balance")
-async def show_balance(ctx: commands.Context):
-    account = get_user_account(ctx.author.id)
-    await ctx.send(f"💰 目前餘額：{fmt_money(account['balance'])}")
+async def show_balance(ctx: commands.Context, account_name: str = "all"):
+    if account_name.lower() in {"all", "全部"}:
+        lines = ["💰 目前餘額："]
+        for account_key in ACCOUNTING_ACCOUNTS:
+            account = get_account(account_key)
+            lines.append(f"{account_key}：{fmt_money(float(account['balance']))}")
+        await ctx.send("\n".join(lines))
+        return
+
+    account_key = normalize_account_name(account_name)
+    if account_key is None:
+        await ctx.send("❌ 帳戶只支援 `suyu` / `gary`。用法：`!balance suyu` 或 `!balance all`")
+        return
+
+    account = get_account(account_key)
+    await ctx.send(f"💰 **{account_key}** 目前餘額：{fmt_money(float(account['balance']))}")
 
 
 @bot.command(name="records")
-async def show_records(ctx: commands.Context, count: int = 5):
-    account = get_user_account(ctx.author.id)
-    records = account["records"][-max(1, min(count, 10)):]
+async def show_records(ctx: commands.Context, account_name: str = "all", count: int = 5):
+    count = max(1, min(count, 10))
 
-    if not records:
-        await ctx.send("目前沒有記帳紀錄。")
+    if account_name.lower() in {"all", "全部"}:
+        lines = [f"📒 最近記帳紀錄（每人最多 {count} 筆）："]
+        for account_key in ACCOUNTING_ACCOUNTS:
+            account = get_account(account_key)
+            records = account["records"][-count:]
+            lines.append(f"\n【{account_key}】")
+            if not records:
+                lines.append("目前沒有記帳紀錄。")
+                continue
+            for record in reversed(records):
+                lines.append(format_account_record_line(record))
+        await ctx.send("\n".join(lines))
         return
 
-    lines = [f"📒 最近 {len(records)} 筆記帳紀錄："]
-    for record in reversed(records):
-        record_type = record.get("type")
-        if record_type == "income":
-            type_text = "收入"
-            sign = "+"
-        elif record_type == "expense":
-            type_text = "支出"
-            sign = "-"
-        else:
-            type_text = "設定餘額"
-            sign = ""
+    account_key = normalize_account_name(account_name)
+    if account_key is None:
+        await ctx.send("❌ 帳戶只支援 `suyu` / `gary`。用法：`!records suyu 5` 或 `!records all 5`")
+        return
 
-        lines.append(
-            f"{record.get('time', '')}｜{type_text} {sign}{fmt_money(float(record.get('amount', 0)))}｜"
-            f"{record.get('reason', '未填寫')}｜餘額 {fmt_money(float(record.get('balance_after', 0)))}"
-        )
+    account = get_account(account_key)
+    records = account["records"][-count:]
+
+    if not records:
+        await ctx.send(f"**{account_key}** 目前沒有記帳紀錄。")
+        return
+
+    lines = [f"📒 **{account_key}** 最近 {len(records)} 筆記帳紀錄："]
+    for record in reversed(records):
+        lines.append(format_account_record_line(record))
 
     await ctx.send("\n".join(lines))
 
@@ -1443,11 +1541,11 @@ async def custom_help(ctx: commands.Context):
         "  setalert <幣種> <價格>  設定價格提醒\n"
         "  alerts  查看目前未觸發的價格提醒\n"
         "  delalert <幣種> <價格>  刪除價格提醒\n\n"
-        "  income <金額> <事由>  新增收入，例如：!income 1000 打工薪水\n"
-        "  expense <金額> <事由>  新增支出，例如：!expense 120 午餐\n"
-        "  setbalance <金額>  手動設定餘額\n"
-        "  balance  查看目前餘額\n"
-        "  records [數量]  查看最近記帳紀錄，最多 10 筆\n\n"
+        "  income <suyu/gary> <金額> <事由>  新增收入，例如：!income suyu 1000 打工薪水\n"
+        "  expense <suyu/gary> <金額> <事由>  新增支出，例如：!expense gary 120 午餐\n"
+        "  setbalance <suyu/gary> <金額>  手動設定餘額，例如：!setbalance suyu 5000\n"
+        "  balance [suyu/gary/all]  查看餘額，例如：!balance all\n"
+        "  records [suyu/gary/all] [數量]  查看最近記帳紀錄，最多 10 筆，例如：!records suyu 5\n\n"
         "  join   加入語音頻道陪你\n"
         "  bye   離開語音頻道\n\n"
         "  clear （數字） 清除當前頻道最近 X 則訊息\n\n"
