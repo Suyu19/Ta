@@ -126,7 +126,7 @@ last_seen_prices: dict[str, float | None] = {
 # =========================
 
 ACCOUNTING_FILE = "accounting_data.json"
-ACCOUNTING_ACCOUNTS = ("suyu", "gary")
+ACCOUNTING_ACCOUNTS = ("suyu", "gary", "win")
 
 # 帳戶名稱 -> {
 #   "balance": float,
@@ -1389,7 +1389,7 @@ async def daily_test(ctx: commands.Context):
 # 記帳指令
 # =========================
 
-ACCOUNT_USAGE_TEXT = "帳戶只支援 `suyu` / `gary`。用法：`!income suyu 1000 打工薪水`"
+ACCOUNT_USAGE_TEXT = "帳戶只支援 `suyu` / `gary` / `win`。用法：`!income suyu 1000 打工薪水`"
 
 
 def format_account_record_line(record: dict) -> str:
@@ -1455,7 +1455,7 @@ async def add_expense(ctx: commands.Context, account_name: str, amount: float, *
 async def set_balance(ctx: commands.Context, account_name: str, amount: float):
     account_key = normalize_account_name(account_name)
     if account_key is None:
-        await ctx.send("❌ 帳戶只支援 `suyu` / `gary`。用法：`!setbalance suyu 5000`")
+        await ctx.send("❌ 帳戶只支援 `suyu` / `gary` / `win。用法：`!setbalance suyu 5000`")
         return
 
     account = get_account(account_key)
@@ -1486,7 +1486,7 @@ async def show_balance(ctx: commands.Context, account_name: str = "all"):
 
     account_key = normalize_account_name(account_name)
     if account_key is None:
-        await ctx.send("❌ 帳戶只支援 `suyu` / `gary`。用法：`!balance suyu` 或 `!balance all`")
+        await ctx.send("❌ 帳戶只支援 `suyu` / `gary` / `win。用法：`!balance suyu` 或 `!balance all`")
         return
 
     account = get_account(account_key)
@@ -1513,7 +1513,7 @@ async def show_records(ctx: commands.Context, account_name: str = "all", count: 
 
     account_key = normalize_account_name(account_name)
     if account_key is None:
-        await ctx.send("❌ 帳戶只支援 `suyu` / `gary`。用法：`!records suyu 5` 或 `!records all 5`")
+        await ctx.send("❌ 帳戶只支援 `suyu` / `gary` / `win。用法：`!records suyu 5` 或 `!records all 5`")
         return
 
     account = get_account(account_key)
