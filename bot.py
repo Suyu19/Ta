@@ -1,3 +1,4 @@
+from __future__ import annotations
 import discord
 from discord.ext import commands, tasks
 import asyncio
@@ -16,7 +17,7 @@ import json
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
-print("BOOT VERSION: 2026-06-24-grad-crypto-accounting-two-users-1", flush=True)
+print("BOOT VERSION: 2026-06-24-grad-crypto-accounting-three-users-fixed-1", flush=True)
 
 # =========================
 # 基本設定
@@ -156,8 +157,14 @@ def ensure_accounting_accounts():
     for account_name in ACCOUNTING_ACCOUNTS:
         if account_name not in accounting_data or not isinstance(accounting_data[account_name], dict):
             accounting_data[account_name] = {"balance": 0.0, "records": []}
-        accounting_data[account_name].setdefault("balance", 0.0)
-        accounting_data[account_name].setdefault("records", [])
+
+        try:
+            accounting_data[account_name]["balance"] = float(accounting_data[account_name].get("balance", 0.0))
+        except Exception:
+            accounting_data[account_name]["balance"] = 0.0
+
+        if not isinstance(accounting_data[account_name].get("records"), list):
+            accounting_data[account_name]["records"] = []
 
 
 def load_accounting_data():
@@ -188,7 +195,7 @@ def save_accounting_data():
 def get_account(account_name: str):
     normalized = normalize_account_name(account_name)
     if normalized is None:
-        raise ValueError("帳戶只支援 suyu 或 gary")
+        raise ValueError("帳戶只支援 suyu、gary 或 win")
     ensure_accounting_accounts()
     return accounting_data[normalized]
 
@@ -202,7 +209,7 @@ def fmt_money(amount: float) -> str:
 def add_accounting_record(account_name: str, record_type: str, amount: float, reason: str, operator):
     account_key = normalize_account_name(account_name)
     if account_key is None:
-        raise ValueError("帳戶只支援 suyu 或 gary")
+        raise ValueError("帳戶只支援 suyu、gary 或 win")
 
     account = get_account(account_key)
     if record_type == "income":
@@ -1455,7 +1462,7 @@ async def add_expense(ctx: commands.Context, account_name: str, amount: float, *
 async def set_balance(ctx: commands.Context, account_name: str, amount: float):
     account_key = normalize_account_name(account_name)
     if account_key is None:
-        await ctx.send("❌ 帳戶只支援 `suyu` / `gary` / `win。用法：`!setbalance suyu 5000`")
+        await ctx.send("❌ 帳戶只支援 `suyu` / `gary` / `win`。用法：`!setbalance suyu 5000`")
         return
 
     account = get_account(account_key)
@@ -1486,7 +1493,7 @@ async def show_balance(ctx: commands.Context, account_name: str = "all"):
 
     account_key = normalize_account_name(account_name)
     if account_key is None:
-        await ctx.send("❌ 帳戶只支援 `suyu` / `gary` / `win。用法：`!balance suyu` 或 `!balance all`")
+        await ctx.send("❌ 帳戶只支援 `suyu` / `gary` / `win`。用法：`!balance suyu`、`!balance win` 或 `!balance all`")
         return
 
     account = get_account(account_key)
@@ -1513,7 +1520,7 @@ async def show_records(ctx: commands.Context, account_name: str = "all", count: 
 
     account_key = normalize_account_name(account_name)
     if account_key is None:
-        await ctx.send("❌ 帳戶只支援 `suyu` / `gary` / `win。用法：`!records suyu 5` 或 `!records all 5`")
+        await ctx.send("❌ 帳戶只支援 `suyu` / `gary` / `win`。用法：`!records suyu 5`、`!records win 5` 或 `!records all 5`")
         return
 
     account = get_account(account_key)
@@ -1541,11 +1548,11 @@ async def custom_help(ctx: commands.Context):
         "  setalert <幣種> <價格>  設定價格提醒\n"
         "  alerts  查看目前未觸發的價格提醒\n"
         "  delalert <幣種> <價格>  刪除價格提醒\n\n"
-        "  income <suyu/gary> <金額> <事由>  新增收入，例如：!income suyu 1000 打工薪水\n"
-        "  expense <suyu/gary> <金額> <事由>  新增支出，例如：!expense gary 120 午餐\n"
-        "  setbalance <suyu/gary> <金額>  手動設定餘額，例如：!setbalance suyu 5000\n"
-        "  balance [suyu/gary/all]  查看餘額，例如：!balance all\n"
-        "  records [suyu/gary/all] [數量]  查看最近記帳紀錄，最多 10 筆，例如：!records suyu 5\n\n"
+        "  income <suyu/gary/win> <金額> <事由>  新增收入，例如：!income win 1000 打工薪水\n"
+        "  expense <suyu/gary/win> <金額> <事由>  新增支出，例如：!expense win 120 午餐\n"
+        "  setbalance <suyu/gary/win> <金額>  手動設定餘額，例如：!setbalance win 5000\n"
+        "  balance [suyu/gary/win/all]  查看餘額，例如：!balance all\n"
+        "  records [suyu/gary/win/all] [數量]  查看最近記帳紀錄，最多 10 筆，例如：!records win 5\n\n"
         "  join   加入語音頻道陪你\n"
         "  bye   離開語音頻道\n\n"
         "  clear （數字） 清除當前頻道最近 X 則訊息\n\n"
