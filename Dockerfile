@@ -1,41 +1,28 @@
-# 使用官方 Python 映像
 FROM python:3.11-slim
 
-# 安裝 ffmpeg（重點）
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-# 設定工作目錄
 WORKDIR /app
 
-# 先複製 requirements 並安裝依賴
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 再複製其他程式碼
-COPY . .
-
-# 啟動指令
-CMD ["python", "bot.py"]
-
-# 使用官方 Python 映像
-FROM python:3.11-slim
-
-# 安裝 ffmpeg 和 nodejs（重點）
+# Discord voice / yt-dlp runtime dependencies
+# Node.js is kept because yt-dlp may require a JS runtime.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg nodejs && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        nodejs \
+        npm \
+        ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# 設定工作目錄
-WORKDIR /app
+# Copy dependency file first so Docker can cache this layer safely.
+COPY requirements.txt /app/requirements.txt
 
-# 先複製 requirements 並安裝依賴
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    python -m pip install --no-cache-dir -r /app/requirements.txt
 
-# 再複製其他程式碼
-COPY . .
+# Copy application only after dependencies are installed.
+COPY . /app
 
-# 啟動指令
 CMD ["python", "bot.py"]
