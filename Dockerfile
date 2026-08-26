@@ -6,8 +6,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Discord voice / yt-dlp runtime dependencies
-# Node.js is kept because yt-dlp may require a JS runtime.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -16,13 +14,20 @@ RUN apt-get update && \
         ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy dependency file first so Docker can cache this layer safely.
 COPY requirements.txt /app/requirements.txt
+
+# Show exactly what Railway is installing.
+RUN echo "===== requirements.txt =====" && \
+    cat /app/requirements.txt && \
+    echo "============================"
 
 RUN python -m pip install --upgrade pip setuptools wheel && \
     python -m pip install --no-cache-dir -r /app/requirements.txt
 
-# Copy application only after dependencies are installed.
+# Hard build-time verification.
+# If pandas/numpy/requests are missing, the IMAGE MUST NOT BUILD.
+RUN python -c "import pandas, numpy, requests; print('DEPENDENCY CHECK PASS'); print('pandas=', pandas.__version__); print('numpy=', numpy.__version__); print('requests=', requests.__version__)"
+
 COPY . /app
 
 CMD ["python", "bot.py"]
