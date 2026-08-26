@@ -16,17 +16,25 @@ RUN apt-get update && \
 
 COPY requirements.txt /app/requirements.txt
 
-# Show exactly what Railway is installing.
 RUN echo "===== requirements.txt =====" && \
     cat /app/requirements.txt && \
     echo "============================"
 
-RUN python -m pip install --upgrade pip setuptools wheel && \
-    python -m pip install --no-cache-dir -r /app/requirements.txt
+RUN python -m pip install --upgrade pip setuptools wheel
 
-# Hard build-time verification.
-# If pandas/numpy/requests are missing, the IMAGE MUST NOT BUILD.
-RUN python -c "import pandas, numpy, requests; print('DEPENDENCY CHECK PASS'); print('pandas=', pandas.__version__); print('numpy=', numpy.__version__); print('requests=', requests.__version__)"
+# Install all original bot dependencies.
+RUN python -m pip install --no-cache-dir -r /app/requirements.txt
+
+# Explicitly guarantee the trading-engine dependencies exist,
+# even if requirements.txt is stale/malformed/cached unexpectedly.
+RUN python -m pip install --no-cache-dir \
+    "pandas>=2.0" \
+    "numpy>=1.24" \
+    "requests>=2.31" \
+    "tzdata>=2024.1"
+
+# Build must fail here if the trading runtime is incomplete.
+RUN python -c "import pandas, numpy, requests, zoneinfo; print('TRADING DEPENDENCY CHECK PASS'); print('pandas=', pandas.__version__); print('numpy=', numpy.__version__); print('requests=', requests.__version__)"
 
 COPY . /app
 
