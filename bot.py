@@ -16,8 +16,9 @@ from typing import Optional
 import json
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
+from trade_discord_bridge import TradeDiscordBridge
 
-print("BOOT VERSION: 2026-06-24-grad-crypto-accounting-three-users-fixed-1", flush=True)
+print("BOOT VERSION: 2026-08-26-dual-forward-paper-discord-cloud-1", flush=True)
 
 # =========================
 # 基本設定
@@ -78,6 +79,17 @@ intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+# =========================
+# Forward Paper / Discord 雲端橋接
+# =========================
+# TRADE_CHANNEL_ID 可指定獨立交易頻道；若未設定，暫時沿用 CRYPTO_ALERT_CHANNEL_ID。
+# 雲端部署時請把 TRADE_DATA_DIR 指向「持久化磁碟」，例如 /data/trading。
+trade_bridge = TradeDiscordBridge(
+    bot,
+    TZ,
+    fallback_channel_id=CRYPTO_ALERT_CHANNEL_ID,
+)
 
 # 音樂狀態
 music_queue = []
@@ -1115,6 +1127,7 @@ async def on_ready():
         asyncio.create_task(sleep_check_task())
         asyncio.create_task(daily_crypto_summary_task())
         crypto_price_watch_task.start()
+        trade_bridge.start()
         task_started = True
 
 
@@ -1537,6 +1550,78 @@ async def show_records(ctx: commands.Context, account_name: str = "all", count: 
     await ctx.send("\n".join(lines))
 
 
+
+# =========================
+# Forward Paper 交易控制指令
+# =========================
+
+def _is_admin(ctx: commands.Context) -> bool:
+    return bool(
+        ctx.guild
+        and isinstance(ctx.author, discord.Member)
+        and ctx.author.guild_permissions.administrator
+    )
+
+
+@bot.command(name="trade")
+async def trade_control(ctx: commands.Context, action: str = "status"):
+    """
+    !trade status
+    !trade stop
+    !trade start
+    !trade test
+    """
+    action = action.strip().lower()
+
+    if action in {"status", "狀態"}:
+        await ctx.send(await trade_bridge.status_text())
+        return
+
+    if action in {"stop", "pause", "停止", "暫停"}:
+        if not _is_admin(ctx):
+            await ctx.send("❌ 只有管理員可以暫停 Forward Paper 新增風險。")
+            return
+
+        await ctx.send(await trade_bridge.pause_new_risk())
+        return
+
+    if action in {"start", "resume", "開始", "恢復"}:
+        if not _is_admin(ctx):
+            await ctx.send("❌ 只有管理員可以恢復 Forward Paper 新增風險。")
+            return
+
+        await ctx.send(await trade_bridge.resume_new_risk())
+        return
+
+    if action in {"test", "測試"}:
+        if not _is_admin(ctx):
+            await ctx.send("❌ 只有管理員可以執行交易通報測試。")
+            return
+
+        await ctx.send(await trade_bridge.send_test_notification())
+        return
+
+    await ctx.send(
+        "用法：`!trade status`、`!trade stop`、`!trade start`、`!trade test`"
+    )
+
+
+@bot.command(name="start")
+async def start_command(ctx: commands.Context, mode: str = ""):
+    """
+    保留 !start trade 作為 !stop trade 的對稱指令。
+    """
+    if mode.strip().lower() != "trade":
+        await ctx.send("用法：`!start trade`")
+        return
+
+    if not _is_admin(ctx):
+        await ctx.send("❌ 只有管理員可以恢復 Forward Paper 新增風險。")
+        return
+
+    await ctx.send(await trade_bridge.resume_new_risk())
+
+
 @bot.command(name="help")
 async def custom_help(ctx: commands.Context):
     msg = (
@@ -1548,6 +1633,13 @@ async def custom_help(ctx: commands.Context):
         "  setalert <幣種> <價格>  設定價格提醒\n"
         "  alerts  查看目前未觸發的價格提醒\n"
         "  delalert <幣種> <價格>  刪除價格提醒\n\n"
+        "【Forward Paper 交易系統】\n"
+        "  trade status  查看 Champion / Challenger 狀態\n"
+        "  trade stop  暫停開新倉與加倉（現有倉仍會安全管理；管理員）\n"
+        "  trade start  恢復開新倉與加倉（管理員）\n"
+        "  trade test  測試交易頻道通報（管理員）\n"
+        "  stop trade / start trade  可作為上述 stop/start 的快捷指令\n"
+        "  每天 20:00 自動發送 Champion / Challenger 今日盈虧摘要\n\n"
         "  income <suyu/gary/win> <金額> <事由>  新增收入，例如：!income win 1000 打工薪水\n"
         "  expense <suyu/gary/win> <金額> <事由>  新增支出，例如：!expense win 120 午餐\n"
         "  setbalance <suyu/gary/win> <金額>  手動設定餘額，例如：!setbalance win 5000\n"
@@ -1752,8 +1844,22 @@ async def play_youtube(ctx: commands.Context, url: str):
 
 
 @bot.command(name="stop")
-async def stop_audio(ctx: commands.Context):
+async def stop_audio(ctx: commands.Context, mode: str = ""):
     global music_queue, is_playing
+
+    # !stop trade：暫停「新增風險」，但不凍結既有持倉的 TP / Stop / Funding。
+    if mode.strip().lower() == "trade":
+        if not _is_admin(ctx):
+            await ctx.send("❌ 只有管理員可以暫停 Forward Paper 新增風險。")
+            return
+
+        await ctx.send(await trade_bridge.pause_new_risk())
+        return
+
+    # 原本的 !stop：停止音樂。
+    if mode.strip():
+        await ctx.send("音樂停止請用 `!stop`；交易暫停請用 `!stop trade`。")
+        return
 
     voice_client = ctx.voice_client
     if voice_client is None:
