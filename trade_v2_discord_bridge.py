@@ -49,6 +49,39 @@ def _fmt_num(x, digits=2):
         return "—"
 
 
+def _zh(value):
+    """
+    Discord display-only translation.
+    IMPORTANT: this does NOT change any internal strategy enum / trading logic.
+    """
+    mapping = {
+        "ENABLED": "已啟用",
+        "PAUSED": "已暫停",
+
+        "TREND_BULL": "多頭趨勢",
+        "TREND_BEAR": "空頭趨勢",
+        "TRANS_BULL": "多頭轉換",
+        "TRANS_BEAR": "空頭轉換",
+        "RANGE": "盤整",
+
+        "LONG": "多單",
+        "SHORT": "空單",
+        "NEUTRAL": "中性",
+
+        "BULL": "多頭",
+        "BEAR": "空頭",
+        "BULLISH": "多頭",
+        "BEARISH": "空頭",
+        "MIXED": "混合",
+        "UNKNOWN": "未知",
+
+        "FLAT": "無持倉",
+    }
+    if value is None:
+        return "—"
+    return mapping.get(str(value), str(value))
+
+
 class LiveStrategyV2DiscordBridge:
     def __init__(self, bot, tz, fallback_channel_id: Optional[int]=None):
         self.bot=bot
@@ -322,25 +355,28 @@ class LiveStrategyV2DiscordBridge:
             try:status=json.loads(self.engine.status_file.read_text(encoding="utf-8"))
             except Exception:status=None
         if status is None:
-            return "📡 Strategy v2.1 LIVE 尚未產生第一份 status。"
+            return "📡 Strategy v2.1 LIVE 尚未產生第一份狀態資料。"
 
         a=status.get("account",{})
         meta=status.get("meta",{})
+
+        risk_text = "已啟用" if self.new_risk_enabled else "已暫停"
+
         lines=[
             "🚨 **Strategy v2.1 LIVE 狀態**",
-            f"新增風險：**{'ENABLED' if self.new_risk_enabled else 'PAUSED'}**",
-            f"Meta：**{meta.get('state')}**｜Score **{meta.get('score')}/6**",
-            f"Equity：**{_fmt_u(a.get('margin_balance'))}**｜"
-            f"Wallet **{_fmt_u(a.get('wallet_balance'))}**｜"
-            f"DD **{float(a.get('portfolio_dd',0))*100:.2f}%**",
-            f"Initial Margin：**{_fmt_u(a.get('initial_margin'))}**｜"
-            f"Util **{float(a.get('initial_margin_util',0))*100:.2f}%**",
-            f"Trend Lock **{float(status.get('trend_lock',0))*100:.0f}%**｜"
-            f"FLEX Lock **{float(status.get('flex_lock',0))*100:.0f}%**",
+            f"新增風險：**{risk_text}**",
+            f"市場狀態：**{_zh(meta.get('state'))}**｜分數 **{meta.get('score',0)}/6**",
+            f"帳戶權益：**{_fmt_u(a.get('margin_balance'))}**｜"
+            f"錢包餘額 **{_fmt_u(a.get('wallet_balance'))}**｜"
+            f"回撤 **{float(a.get('portfolio_dd',0))*100:.2f}%**",
+            f"起始保證金：**{_fmt_u(a.get('initial_margin'))}**｜"
+            f"保證金使用率 **{float(a.get('initial_margin_util',0))*100:.2f}%**",
+            f"趨勢策略額度 **{float(status.get('trend_lock',0))*100:.0f}%**｜"
+            f"FLEX 策略額度 **{float(status.get('flex_lock',0))*100:.0f}%**",
         ]
 
-        # Global Meta 0/6 breakdown.  This is deliberately separate from
-        # each symbol's Trend Entry 0/4 readiness score.
+        # Global Meta 0/6 breakdown.
+        # Display translation only; internal strategy logic remains unchanged.
         mc=meta.get("conditions",{})
         if mc:
             al=mc.get("d1_h4_aligned",{})
@@ -350,82 +386,101 @@ class LiveStrategyV2DiscordBridge:
             sept=mc.get("ema_separation_non_declining",{})
             lines += [
                 "",
-                f"**Meta Score 明細（全域 {meta.get('score', 0)}/6）**",
-                f"{_mark(al.get('ok'))} 1D/4H 同方向：{al.get('direction','—')} "
+                f"**市場趨勢分數明細（{meta.get('score',0)}/6）**",
+                f"{_mark(al.get('ok'))} 日線／4H 同方向：{_zh(al.get('direction','—'))} "
                 f"(**+{int(al.get('points',0))}/2**)",
                 f"{_mark(adx.get('ok'))} 4H ADX ≥25："
                 f"{_fmt_num(adx.get('value'))}",
-                f"{_mark(adxt.get('ok'))} ADX 未衰退："
-                f"{_fmt_num(adxt.get('value'))} vs 2根前 {_fmt_num(adxt.get('lag2'))}",
-                f"{_mark(sep.get('ok'))} EMA Separation ≥0.75 ATR："
+                f"{_mark(adxt.get('ok'))} ADX 未維持強度："
+                f"{_fmt_num(adxt.get('value'))}｜2 根前 {_fmt_num(adxt.get('lag2'))}",
+                f"{_mark(sep.get('ok'))} EMA 間距 ≥0.75 ATR："
                 f"{_fmt_num(sep.get('value'),3)} ATR",
-                f"{_mark(sept.get('ok'))} Separation 未縮小："
-                f"{_fmt_num(sept.get('value'),3)} vs 2根前 {_fmt_num(sept.get('lag2'),3)}",
+                f"{_mark(sept.get('ok'))} EMA 間距未持續擴大："
+                f"{_fmt_num(sept.get('value'),3)}｜2 根前 {_fmt_num(sept.get('lag2'),3)}",
             ]
 
         diagnostics=status.get("trend_entry_diagnostics",{})
-        lines += ["", "**Trend 狀態 / 新開倉條件**"]
+        lines += ["", "**趨勢策略狀態／新開倉條件**"]
+
         for s,tr in status.get("trend_active",{}).items():
             coin=s.replace("USDT","")
             d=diagnostics.get(s,{})
+
             if tr is None:
                 lines.append(
-                    f"**{coin} Trend：FLAT｜Entry Score "
+                    f"**{coin}：無持倉｜開倉分數 "
                     f"{d.get('score','—')}/{d.get('max_score',4)}｜"
-                    f"方向 {d.get('direction','—')}**"
+                    f"方向 {_zh(d.get('direction','—'))}**"
                 )
+
                 if not d.get("available",False):
                     lines.append(f"↳ ⚠️ {d.get('reason','診斷資料不足')}")
                     continue
+
                 c=d.get("conditions",{})
                 hb=c.get("h4_bias",{})
                 pb=c.get("h1_pullback",{})
                 tg=c.get("m15_fresh_trigger",{})
                 ax=c.get("adx20",{})
+
                 lines.append(
-                    f"↳ {_mark(hb.get('ok'))} 4H Bias：**{hb.get('value','—')}** "
-                    f"(Structure {hb.get('structure','—')})"
+                    f"↳ {_mark(hb.get('ok'))} 4H 趨勢偏向：**{_zh(hb.get('value','—'))}** "
+                    f"（結構：{_zh(hb.get('structure','—'))}）"
                 )
                 lines.append(
-                    f"↳ {_mark(pb.get('ok'))} 1H Pullback："
-                    f"Close {_fmt_p(pb.get('close'))}｜EMA20 {_fmt_p(pb.get('ema20'))}｜"
+                    f"↳ {_mark(pb.get('ok'))} 1H 回調條件："
+                    f"收盤 {_fmt_p(pb.get('close'))}｜EMA20 {_fmt_p(pb.get('ema20'))}｜"
                     f"EMA50 {_fmt_p(pb.get('ema50'))}"
                 )
                 lines.append(
-                    f"↳ {_mark(tg.get('ok'))} 15m Fresh Trigger："
-                    f"{tg.get('prev_structure','—')} → {tg.get('structure','—')}｜"
-                    f"Close {_fmt_p(tg.get('close'))} / EMA20 {_fmt_p(tg.get('ema20'))}"
+                    f"↳ {_mark(tg.get('ok'))} 15m 新觸發："
+                    f"{_zh(tg.get('prev_structure','—'))} → {_zh(tg.get('structure','—'))}｜"
+                    f"收盤 {_fmt_p(tg.get('close'))}｜EMA20 {_fmt_p(tg.get('ema20'))}"
                 )
                 lines.append(
                     f"↳ {_mark(ax.get('ok'))} ADX20："
                     f"{_fmt_num(ax.get('value'))} ≥ {_fmt_num(ax.get('threshold'),0)}"
                 )
+
                 g=d.get("gates",{})
                 lines.append(
-                    f"↳ Gate：新增風險 {_mark(g.get('new_risk_enabled'))}｜"
-                    f"Cooldown {_mark(g.get('cooldown_ready'))} "
-                    f"({int(g.get('cooldown_bars',0))} bars)"
-                    + (f"｜Pending **{g.get('pending_kind')}**" if g.get('pending_kind') else "")
+                    f"↳ 下單限制：新增風險 {_mark(g.get('new_risk_enabled'))}｜"
+                    f"冷卻完成 {_mark(g.get('cooldown_ready'))} "
+                    f"（剩餘 {int(g.get('cooldown_bars',0))} 根）"
+                    + (
+                        f"｜待執行 **{g.get('pending_kind')}**"
+                        if g.get("pending_kind")
+                        else ""
+                    )
                 )
+
             else:
                 lines.append(
-                    f"**{coin} Trend：{tr.get('direction')} {tr.get('units')} units**｜"
-                    f"Avg {_fmt_p(tr.get('avg_entry'))}｜PnL {_fmt_u(tr.get('pnl'),True)}｜"
-                    f"Locked Unit {_fmt_u(tr.get('locked_unit_notional'))}"
+                    f"**{coin}：{_zh(tr.get('direction'))} {tr.get('units')} Unit**｜"
+                    f"平均開倉 {_fmt_p(tr.get('avg_entry'))}｜"
+                    f"未實現盈虧 {_fmt_u(tr.get('pnl'),True)}｜"
+                    f"鎖定 Unit {_fmt_u(tr.get('locked_unit_notional'))}"
                 )
 
         fx=status.get("flex")
         if fx is None:
-            lines.append("BTC FLEX：FLAT")
+            lines.append("**BTC FLEX：無持倉**")
         else:
+            hedge_qty=float(fx.get("short_qty",0) or 0)
             lines.append(
-                f"BTC FLEX：LONG entries {fx.get('entries')}｜"
-                f"Avg {_fmt_p(fx.get('avg_entry'))}｜PnL {_fmt_u(fx.get('pnl'),True)}｜"
-                f"Hedge {float(fx.get('short_qty',0)):.6g} BTC"
+                f"**BTC FLEX：多單｜加倉次數 {fx.get('entries')}**｜"
+                f"平均開倉 {_fmt_p(fx.get('avg_entry'))}｜"
+                f"未實現盈虧 {_fmt_u(fx.get('pnl'),True)}｜"
+                f"空單避險 {hedge_qty:.6g} BTC"
             )
+
         if status.get("halted"):
-            lines += ["",f"🚨 HALTED：`{status.get('halt_reason')}`"]
-        return "\n".join(lines)
+            lines += [
+                "",
+                f"🚨 **策略已停止自動交易**：`{status.get('halt_reason')}`"
+            ]
+
+        return "\\n".join(lines)
 
     async def send_test_notification(self):
         ch=await self._get_channel()
