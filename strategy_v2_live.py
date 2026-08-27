@@ -454,10 +454,59 @@ def meta_state_from_frames(d1: pd.DataFrame, h4: pd.DataFrame) -> dict:
             state = "RANGE"
 
     last = merged.iloc[-1]
+    aligned_ok = int(last["aligned_dir"]) != 0
+    adx_ok = bool(last["adx14"] >= 25)
+    adx_trend_ok = bool(
+        not pd.isna(last["adx_lag2"])
+        and last["adx14"] >= last["adx_lag2"]
+    )
+    sep_ok = bool(last["sep_atr"] >= 0.75)
+    sep_trend_ok = bool(
+        not pd.isna(last["sep_lag2"])
+        and last["sep_atr"] >= last["sep_lag2"]
+    )
+
     return {
         "state": state,
         "score": int(last["score"]),
         "aligned_dir": int(last["aligned_dir"]),
+        "conditions": {
+            "d1_h4_aligned": {
+                "ok": aligned_ok,
+                "points": 2 if aligned_ok else 0,
+                "direction": (
+                    "BULL" if int(last["aligned_dir"]) == 1
+                    else "BEAR" if int(last["aligned_dir"]) == -1
+                    else "NONE"
+                ),
+            },
+            "adx_ge_25": {
+                "ok": adx_ok,
+                "value": float(last["adx14"]),
+                "threshold": 25.0,
+            },
+            "adx_non_declining": {
+                "ok": adx_trend_ok,
+                "value": float(last["adx14"]),
+                "lag2": (
+                    float(last["adx_lag2"])
+                    if not pd.isna(last["adx_lag2"]) else None
+                ),
+            },
+            "ema_separation_ge_075_atr": {
+                "ok": sep_ok,
+                "value": float(last["sep_atr"]),
+                "threshold": 0.75,
+            },
+            "ema_separation_non_declining": {
+                "ok": sep_trend_ok,
+                "value": float(last["sep_atr"]),
+                "lag2": (
+                    float(last["sep_lag2"])
+                    if not pd.isna(last["sep_lag2"]) else None
+                ),
+            },
+        },
         "d1": {
             "close": float(last["d_close"]),
             "ema20": float(last["d_ema20"]),
@@ -1662,8 +1711,107 @@ class StrategyV2LiveEngine:
         return status
 
     # --------------------------------------------------------
-    # Status
+    # Status / entry diagnostics
     # --------------------------------------------------------
+
+    def _trend_entry_diagnostic(self, market, symbol: str, new_risk_enabled: bool) -> dict:
+        """
+        Explain the exact four core conditions used by Strategy v1.1 for a
+        NEW Trend entry.  This is intentionally separate from the global
+        Meta 0~6 score.
+
+        Entry Score (0~4):
+          1) valid 4H directional bias
+          2) 1H pullback
+          3) fresh 15m trigger
+          4) 4H ADX14 >= locked ADX threshold (20)
+
+        Cooldown / new-risk / pending state are execution gates and are shown
+        separately instead of being counted in the 0~4 score.
+        """
+        ctx = market["contexts"].get(symbol)
+        if ctx is None or len(ctx) < 2:
+            return {
+                "available": False,
+                "score": 0,
+                "max_score": 4,
+                "reason": "insufficient completed 15m context",
+            }
+
+        row = ctx.iloc[-1]
+        prev = ctx.iloc[-2]
+        bias = base.sim.four_hour_bias(row)
+        bias_ok = bias in ("LONG", "SHORT")
+
+        pullback_ok = bool(
+            bias_ok and base.sim.one_hour_pullback(row, bias)
+        )
+        trigger_ok = bool(
+            bias_ok and base.sim.entry_trigger(row, prev, bias)
+        )
+
+        adx_raw = row.get("q4_adx14")
+        adx = (
+            float(adx_raw)
+            if adx_raw is not None and not pd.isna(adx_raw)
+            else None
+        )
+        adx_threshold = float(getattr(base, "ADX_THRESHOLD", 20.0))
+        adx_ok = bool(adx is not None and adx >= adx_threshold)
+
+        score = int(bias_ok) + int(pullback_ok) + int(trigger_ok) + int(adx_ok)
+        cooldown = int(self.state.trend_cooldown.get(symbol, 0))
+        pending = self.state.trend_pending.get(symbol)
+        pending_kind = pending.kind if pending is not None else None
+
+        return {
+            "available": True,
+            "score": score,
+            "max_score": 4,
+            "direction": bias,
+            "entry_allowed_core": bool(score == 4),
+            "eligible_now": bool(
+                score == 4
+                and new_risk_enabled
+                and cooldown <= 0
+                and self.state.trend_active.get(symbol) is None
+            ),
+            "gates": {
+                "new_risk_enabled": bool(new_risk_enabled),
+                "cooldown_ready": cooldown <= 0,
+                "cooldown_bars": cooldown,
+                "pending_kind": pending_kind,
+            },
+            "conditions": {
+                "h4_bias": {
+                    "ok": bias_ok,
+                    "value": bias,
+                    "structure": row.get("h4_structure"),
+                    "close": (float(row["h4_close"]) if not pd.isna(row.get("h4_close")) else None),
+                    "ema20": (float(row["h4_ema20"]) if not pd.isna(row.get("h4_ema20")) else None),
+                    "ema50": (float(row["h4_ema50"]) if not pd.isna(row.get("h4_ema50")) else None),
+                },
+                "h1_pullback": {
+                    "ok": pullback_ok,
+                    "close": (float(row["h1_close"]) if not pd.isna(row.get("h1_close")) else None),
+                    "ema20": (float(row["h1_ema20"]) if not pd.isna(row.get("h1_ema20")) else None),
+                    "ema50": (float(row["h1_ema50"]) if not pd.isna(row.get("h1_ema50")) else None),
+                    "atr14": (float(row["h1_atr14"]) if not pd.isna(row.get("h1_atr14")) else None),
+                },
+                "m15_fresh_trigger": {
+                    "ok": trigger_ok,
+                    "structure": row.get("structure"),
+                    "prev_structure": prev.get("structure"),
+                    "close": (float(row["close"]) if not pd.isna(row.get("close")) else None),
+                    "ema20": (float(row["ema20"]) if not pd.isna(row.get("ema20")) else None),
+                },
+                "adx20": {
+                    "ok": adx_ok,
+                    "value": adx,
+                    "threshold": adx_threshold,
+                },
+            },
+        }
 
     def _build_status(self,market,account,events,new_risk_enabled):
         active={}
@@ -1710,6 +1858,12 @@ class StrategyV2LiveEngine:
             "trend_lock":self.state.trend_lock,
             "flex_lock":self.state.flex_lock,
             "trend_active":active,
+            "trend_entry_diagnostics": {
+                s: self._trend_entry_diagnostic(
+                    market, s, new_risk_enabled
+                )
+                for s in SYMBOLS
+            },
             "flex":flex,
             "pending":{
                 "trend":{

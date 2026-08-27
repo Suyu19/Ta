@@ -38,6 +38,17 @@ def _fmt_p(x):
     return f"${x:,.2f}"
 
 
+def _mark(ok):
+    return "✅" if bool(ok) else "❌"
+
+
+def _fmt_num(x, digits=2):
+    try:
+        return f"{float(x):.{digits}f}"
+    except Exception:
+        return "—"
+
+
 class LiveStrategyV2DiscordBridge:
     def __init__(self, bot, tz, fallback_channel_id: Optional[int]=None):
         self.bot=bot
@@ -326,17 +337,83 @@ class LiveStrategyV2DiscordBridge:
             f"Util **{float(a.get('initial_margin_util',0))*100:.2f}%**",
             f"Trend Lock **{float(status.get('trend_lock',0))*100:.0f}%**｜"
             f"FLEX Lock **{float(status.get('flex_lock',0))*100:.0f}%**",
-            "",
         ]
+
+        # Global Meta 0/6 breakdown.  This is deliberately separate from
+        # each symbol's Trend Entry 0/4 readiness score.
+        mc=meta.get("conditions",{})
+        if mc:
+            al=mc.get("d1_h4_aligned",{})
+            adx=mc.get("adx_ge_25",{})
+            adxt=mc.get("adx_non_declining",{})
+            sep=mc.get("ema_separation_ge_075_atr",{})
+            sept=mc.get("ema_separation_non_declining",{})
+            lines += [
+                "",
+                "**Meta Score 明細（全域 0/6）**",
+                f"{_mark(al.get('ok'))} 1D/4H 同方向：{al.get('direction','—')} "
+                f"(**+{int(al.get('points',0))}/2**)",
+                f"{_mark(adx.get('ok'))} 4H ADX ≥25："
+                f"{_fmt_num(adx.get('value'))}",
+                f"{_mark(adxt.get('ok'))} ADX 未衰退："
+                f"{_fmt_num(adxt.get('value'))} vs 2根前 {_fmt_num(adxt.get('lag2'))}",
+                f"{_mark(sep.get('ok'))} EMA Separation ≥0.75 ATR："
+                f"{_fmt_num(sep.get('value'),3)} ATR",
+                f"{_mark(sept.get('ok'))} Separation 未縮小："
+                f"{_fmt_num(sept.get('value'),3)} vs 2根前 {_fmt_num(sept.get('lag2'),3)}",
+            ]
+
+        diagnostics=status.get("trend_entry_diagnostics",{})
+        lines += ["", "**Trend 狀態 / 新開倉條件**"]
         for s,tr in status.get("trend_active",{}).items():
+            coin=s.replace("USDT","")
+            d=diagnostics.get(s,{})
             if tr is None:
-                lines.append(f"{s.replace('USDT','')} Trend：FLAT")
+                lines.append(
+                    f"**{coin} Trend：FLAT｜Entry Score "
+                    f"{d.get('score','—')}/{d.get('max_score',4)}｜"
+                    f"方向 {d.get('direction','—')}**"
+                )
+                if not d.get("available",False):
+                    lines.append(f"↳ ⚠️ {d.get('reason','診斷資料不足')}")
+                    continue
+                c=d.get("conditions",{})
+                hb=c.get("h4_bias",{})
+                pb=c.get("h1_pullback",{})
+                tg=c.get("m15_fresh_trigger",{})
+                ax=c.get("adx20",{})
+                lines.append(
+                    f"↳ {_mark(hb.get('ok'))} 4H Bias：**{hb.get('value','—')}** "
+                    f"(Structure {hb.get('structure','—')})"
+                )
+                lines.append(
+                    f"↳ {_mark(pb.get('ok'))} 1H Pullback："
+                    f"Close {_fmt_p(pb.get('close'))}｜EMA20 {_fmt_p(pb.get('ema20'))}｜"
+                    f"EMA50 {_fmt_p(pb.get('ema50'))}"
+                )
+                lines.append(
+                    f"↳ {_mark(tg.get('ok'))} 15m Fresh Trigger："
+                    f"{tg.get('prev_structure','—')} → {tg.get('structure','—')}｜"
+                    f"Close {_fmt_p(tg.get('close'))} / EMA20 {_fmt_p(tg.get('ema20'))}"
+                )
+                lines.append(
+                    f"↳ {_mark(ax.get('ok'))} ADX20："
+                    f"{_fmt_num(ax.get('value'))} ≥ {_fmt_num(ax.get('threshold'),0)}"
+                )
+                g=d.get("gates",{})
+                lines.append(
+                    f"↳ Gate：新增風險 {_mark(g.get('new_risk_enabled'))}｜"
+                    f"Cooldown {_mark(g.get('cooldown_ready'))} "
+                    f"({int(g.get('cooldown_bars',0))} bars)"
+                    + (f"｜Pending **{g.get('pending_kind')}**" if g.get('pending_kind') else "")
+                )
             else:
                 lines.append(
-                    f"{s.replace('USDT','')} Trend：{tr.get('direction')} "
-                    f"{tr.get('units')} units｜Avg {_fmt_p(tr.get('avg_entry'))}｜"
-                    f"PnL {_fmt_u(tr.get('pnl'),True)}"
+                    f"**{coin} Trend：{tr.get('direction')} {tr.get('units')} units**｜"
+                    f"Avg {_fmt_p(tr.get('avg_entry'))}｜PnL {_fmt_u(tr.get('pnl'),True)}｜"
+                    f"Locked Unit {_fmt_u(tr.get('locked_unit_notional'))}"
                 )
+
         fx=status.get("flex")
         if fx is None:
             lines.append("BTC FLEX：FLAT")
