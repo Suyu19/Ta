@@ -588,10 +588,11 @@ class StrategyV2LiveEngine:
             raise BinanceLiveError(
                 "Strategy v2.0 requires Single-Asset Mode."
             )
-        acct = self.client.account()
-        if not acct.get("canTrade", False):
+        acct_perm = self.client.account_v2()
+        if not self.client._as_bool(acct_perm.get("canTrade")):
             raise BinanceLiveError("Binance Futures account reports canTrade=false.")
 
+        acct = self.client.account()
         positions = self.client.positions()
         orders = self.client.open_orders()
 

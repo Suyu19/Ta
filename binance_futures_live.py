@@ -237,7 +237,12 @@ class BinanceFuturesLive:
     # --------------------------------------------------------
 
     def account(self) -> dict:
+        """Current USDⓈ-M account snapshot (V3)."""
         return self.signed_get("/fapi/v3/account")
+
+    def account_v2(self) -> dict:
+        """Account permission/config snapshot; V2 includes canTrade."""
+        return self.signed_get("/fapi/v2/account")
 
     @staticmethod
     def _as_bool(value) -> bool:
@@ -300,10 +305,11 @@ class BinanceFuturesLive:
                 "Disable Multi-Assets Mode before LIVE trading."
             )
 
-        acct = self.account()
-        if not acct.get("canTrade", False):
+        acct_v2 = self.account_v2()
+        if not self._as_bool(acct_v2.get("canTrade")):
             raise BinanceLiveError("Binance Futures account reports canTrade=false.")
 
+        acct = self.account()
         syms = set(symbols)
         if require_clean:
             dirty_positions = []
