@@ -409,7 +409,7 @@ class LiveStrategyV2DiscordBridge:
                 )
             else:
                 lines.append(
-                    f"\n目前持倉：\n     **{coin} Trend：{tr.get('direction')} {tr.get('units')} units**｜"
+                    f"\n目前持倉：\n**{coin} Trend：{tr.get('direction')} {tr.get('units')} units**｜"
                     f"開倉價 {_fmt_p(tr.get('avg_entry'))}｜盈虧： {_fmt_u(tr.get('pnl'),True)}｜"
                     f"X槓桿後持倉量 {_fmt_u(tr.get('locked_unit_notional'))}\n"
                 )
