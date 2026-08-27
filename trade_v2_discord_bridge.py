@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Discord bridge for Strategy v2.0 LIVE trading.
+Discord bridge for Strategy v2.1 LIVE trading.
 
 This module is selected only by trade_discord_bridge.py when TRADE_MODE=live.
 """
@@ -123,7 +123,7 @@ class LiveStrategyV2DiscordBridge:
             StrategyV2LiveEngine,
             self.data_root/"strategy_v2_live",
         )
-        print("[trade-live] Strategy v2.0 live engine loaded.",flush=True)
+        print("[trade-live] Strategy v2.1 live engine loaded.",flush=True)
 
     async def _run_loop(self):
         await self.bot.wait_until_ready()
@@ -173,12 +173,12 @@ class LiveStrategyV2DiscordBridge:
 
         if typ=="TREND_OPEN":
             return (
-                f"🟢 **LIVE｜Trend 開倉**\n"
+                f"[🟢](https://discord.com/assets/2d6d478121939bde.svg) **開倉通知｜**"
                 f"{coin}｜{direction}｜Regime **{e.get('meta_state')}** "
-                f"(Score {e.get('meta_score')}/6)\n"
-                f"成交：**{_fmt_p(e.get('price'))}**｜Qty **{e.get('qty')}**\n"
-                f"名義：**{_fmt_u(e.get('notional'))}**｜Risk Budget **{float(e.get('risk_mult',0))*100:.0f}%**\n"
-                f"Trade ID：`{e.get('trade_id')}`\n"
+                f"(Score {e.get('meta_score')}/6) "
+                f"成交價：**{_fmt_p(e.get('price'))}**｜Qty **{e.get('qty')}** "
+                f"名義：**{_fmt_u(e.get('notional'))}**｜Risk Budget **{float(e.get('risk_mult',0))*100:.0f}%** "
+                f"Trade ID：`{e.get('trade_id')}` "
                 f"Binance Order：`{order}`｜Client：`{cid}`"
             )
         if typ=="TREND_ADD":
@@ -212,12 +212,12 @@ class LiveStrategyV2DiscordBridge:
             )
         if typ=="FLEX_OPEN":
             return (
-                f"🟢 **LIVE｜FLEX 開倉**\n"
-                f"BTC LONG｜Regime **{e.get('meta_state')}** "
-                f"(Score {e.get('meta_score')}/6)\n"
-                f"成交 **{_fmt_p(e.get('price'))}**｜Qty **{e.get('qty')}**\n"
-                f"保證金基準 **{_fmt_u(e.get('margin'))}**｜Risk Budget **{float(e.get('risk_mult',0))*100:.0f}%**\n"
-                f"Cycle：`{e.get('cycle_id')}`｜Order：`{order}`"
+                f"[🟢](https://discord.com/assets/2d6d478121939bde.svg) **開倉通知｜**"
+                f"BTC｜LONG｜Regime **{e.get('meta_state')}** "
+                f"(Score {e.get('meta_score')}/6) "
+                f"成交價：**{_fmt_p(e.get('price'))}**｜Qty **{e.get('qty')}** "
+                f"保證金基準：**{_fmt_u(e.get('margin'))}**｜Risk Budget **{float(e.get('risk_mult',0))*100:.0f}%** "
+                f"Cycle ID：`{e.get('cycle_id')}`｜Binance Order：`{order}`｜Client：`{cid}`"
             )
         if typ=="FLEX_ADD":
             return (
@@ -247,7 +247,7 @@ class LiveStrategyV2DiscordBridge:
                 f"原因 `{e.get('reason')}`｜Cycle `{e.get('cycle_id')}`\n"
                 f"Order：`{order}`"
             )
-        return f"ℹ️ **LIVE Strategy v2.0**\n```json\n{json.dumps(e,ensure_ascii=False)[:1700]}\n```"
+        return f"ℹ️ **LIVE Strategy v2.1**\n```json\n{json.dumps(e,ensure_ascii=False)[:1700]}\n```"
 
     async def _send_startup(self):
         ch=await self._get_channel()
@@ -255,8 +255,9 @@ class LiveStrategyV2DiscordBridge:
         status=self._last_status or {}
         a=status.get("account",{})
         await ch.send(
-            "🚨 **Strategy v2.0 LIVE 已啟動｜真實 Binance Futures 訂單**\n"
+            "🚨 **Strategy v2.1 LIVE 已啟動｜真實 Binance Futures 訂單**\n"
             "Meta SAFE v1.1｜Trend Score3 + FLEX-AC\n"
+            "Trend Unit：Profit-Only √ Compounding｜Hard Risk 1%\n"
             f"目前 Equity：**{_fmt_u(a.get('margin_balance'))}**｜"
             f"Portfolio DD：**{float(a.get('portfolio_dd',0))*100:.2f}%**\n"
             f"新增風險：**{'ENABLED' if self.new_risk_enabled else 'PAUSED'}**\n"
@@ -277,7 +278,7 @@ class LiveStrategyV2DiscordBridge:
         if ch is not None:
             try:
                 await ch.send(
-                    "🚨 **Strategy v2.0 LIVE 引擎錯誤**\n"
+                    "🚨 **Strategy v2.1 LIVE 引擎錯誤**\n"
                     f"`{text[:1500]}`\n"
                     "為避免重複/錯誤下單，請優先檢查 Railway Log 與 Binance 真實持倉。"
                 )
@@ -291,7 +292,7 @@ class LiveStrategyV2DiscordBridge:
             await asyncio.to_thread(self.engine.suppress_new_risk_pending)
             self._save_control()
         return (
-            "🛑 **Strategy v2.0 LIVE 已暫停新增風險**\n"
+            "🛑 **Strategy v2.1 LIVE 已暫停新增風險**\n"
             "不再 OPEN / ADD；現有 Trend Exit / Structural TP、"
             "FLEX TP / Recovery Hedge 仍繼續管理。"
         )
@@ -302,7 +303,7 @@ class LiveStrategyV2DiscordBridge:
             await asyncio.to_thread(self.engine.reconcile_or_halt)
             self.control["new_risk_enabled"]=True
             self._save_control()
-        return "▶️ **Strategy v2.0 LIVE 已恢復新增風險。**"
+        return "▶️ **Strategy v2.1 LIVE 已恢復新增風險。**"
 
     async def status_text(self):
         status=self._last_status
@@ -310,12 +311,12 @@ class LiveStrategyV2DiscordBridge:
             try:status=json.loads(self.engine.status_file.read_text(encoding="utf-8"))
             except Exception:status=None
         if status is None:
-            return "📡 Strategy v2.0 LIVE 尚未產生第一份 status。"
+            return "📡 Strategy v2.1 LIVE 尚未產生第一份 status。"
 
         a=status.get("account",{})
         meta=status.get("meta",{})
         lines=[
-            "🚨 **Strategy v2.0 LIVE 狀態**",
+            "🚨 **Strategy v2.1 LIVE 狀態**",
             f"新增風險：**{'ENABLED' if self.new_risk_enabled else 'PAUSED'}**",
             f"Meta：**{meta.get('state')}**｜Score **{meta.get('score')}/6**",
             f"Equity：**{_fmt_u(a.get('margin_balance'))}**｜"
@@ -353,7 +354,7 @@ class LiveStrategyV2DiscordBridge:
         ch=await self._get_channel()
         if ch is None:return "❌ 找不到交易頻道。"
         await ch.send(
-            "🧪 **Strategy v2.0 LIVE Discord 通報測試成功**\n"
+            "🧪 **Strategy v2.1 LIVE Discord 通報測試成功**\n"
             "這則測試不會送出 Binance 訂單。"
         )
         return "✅ 已送出 LIVE bridge 測試訊息。"
@@ -376,7 +377,7 @@ class LiveStrategyV2DiscordBridge:
             try:
                 msg=await self.status_text()
                 await ch.send(
-                    f"📊 **Strategy v2.0 LIVE 每日摘要｜{today:%Y/%m/%d}**\n\n"
+                    f"📊 **Strategy v2.1 LIVE 每日摘要｜{today:%Y/%m/%d}**\n\n"
                     +msg
                 )
                 self.control["last_daily_summary_date"]=today.isoformat()

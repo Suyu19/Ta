@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Strategy v2.0 live engine
+Strategy v2.1 live engine
 =========================
 
 Meta SAFE v1.1 + two child engines on ONE real Binance USDⓈ-M Futures wallet.
@@ -12,6 +12,9 @@ Trend child
 - Strategy v1.1 entry + ADX20
 - Re-add into previously reached Pyramid layer requires Continuation Score >=3
 - reference Unit = 140U notional at a 500U starting wallet
+- Profit-Only sqrt compounding on NEW Trend trades only:
+  Unit = base Unit * sqrt(max(1, current equity / starting equity))
+- Unit is locked for the whole Trade, including all Pyramid Adds
 - Max 7 units
 - Structural TP
 - 1H invalidation / 4H bias flip
@@ -51,7 +54,7 @@ Important live differences from historical simulator
   the TP level. It cannot retroactively fill an intrabar spike that occurred
   between polls.
 - Actual account equity/margin controls Meta DD and global new-risk guard.
-- Strategy v2.0 requires a dedicated Futures account/wallet. Do not mix
+- Strategy v2.1 requires a dedicated Futures account/wallet. Do not mix
   unrelated manual futures positions while this engine is active.
 """
 
@@ -78,7 +81,7 @@ from binance_futures_live import (
 )
 
 
-STRATEGY_VERSION = "2.0-META-SAFE-V1.1"
+STRATEGY_VERSION = "2.1-META-SAFE-V1.1-PROFIT-SQRT"
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
 TREND_REF_UNIT_500 = 140.0
 TREND_MAX_UNITS = 7
@@ -118,6 +121,9 @@ class TrendTrade:
     opened_at: int
     trade_start_equity: float
     meta_risk_mult: float
+    # Locked once when this Trend Trade opens. Existing v2.0 state
+    # files are migrated from their first filled Unit.
+    locked_unit_notional: Optional[float] = None
     units: List[TrendUnit] = field(default_factory=list)
     fees: float = 0.0
     realized_core: float = 0.0
@@ -216,7 +222,18 @@ def _trend_trade_from(d):
     if not d:
         return None
     x = dict(d)
-    x["units"] = [_trend_unit_from(u) for u in x.get("units", [])]
+    units = [_trend_unit_from(u) for u in x.get("units", [])]
+    x["units"] = units
+
+    # v2.0 live state did not store a locked Unit size.  During the v2.1
+    # migration, preserve an already-open trade by adopting its first actual
+    # Binance fill notional.  This prevents a deployment from resizing an
+    # existing ETH/BTC campaign mid-trade.
+    if not x.get("locked_unit_notional"):
+        x["locked_unit_notional"] = (
+            float(units[0].entry_notional) if units else None
+        )
+
     return TrendTrade(**x)
 
 
@@ -261,6 +278,9 @@ def state_from_dict(d: dict) -> V2State:
     }
     st.flex_cycle = _flex_from(d.get("flex_cycle"))
     st.flex_pending = _pending_from(d.get("flex_pending"))
+
+    # State schema is backward-compatible; mark the migrated state as v2.1.
+    st.strategy_version = STRATEGY_VERSION
     return st
 
 
@@ -582,11 +602,11 @@ class StrategyV2LiveEngine:
         # Read-only safety checks happen BEFORE changing leverage/margin mode.
         if not self.client.position_mode():
             raise BinanceLiveError(
-                "Strategy v2.0 requires Binance Futures Hedge Mode."
+                "Strategy v2.1 requires Binance Futures Hedge Mode."
             )
         if self.client.multi_assets_mode():
             raise BinanceLiveError(
-                "Strategy v2.0 requires Single-Asset Mode."
+                "Strategy v2.1 requires Single-Asset Mode."
             )
         acct_perm = self.client.account_v2()
         if not self.client._as_bool(acct_perm.get("canTrade")):
@@ -604,7 +624,7 @@ class StrategyV2LiveEngine:
             ]
             if unrelated or orders:
                 raise BinanceLiveError(
-                    "Strategy v2.0 expects a dedicated Futures account. "
+                    "Strategy v2.1 expects a dedicated Futures account. "
                     "Unrelated positions or open orders were found. "
                     "Close them first; LIVE_ALLOW_OTHER_FUTURES_POSITIONS=true "
                     "weakens this protection and is not recommended."
@@ -618,7 +638,7 @@ class StrategyV2LiveEngine:
             ]
             if btc_eth_dirty:
                 raise BinanceLiveError(
-                    "Fresh Strategy v2.0 LIVE state requires BTCUSDT/ETHUSDT "
+                    "Fresh Strategy v2.1 LIVE state requires BTCUSDT/ETHUSDT "
                     "to be flat. The bot will not adopt pre-existing manual positions."
                 )
 
@@ -838,8 +858,25 @@ class StrategyV2LiveEngine:
         other = self.state.flex_lock if sleeve=="trend" else self.state.trend_lock
         return max(0.0,min(desired,1.0-other))
 
-    def trend_unit_notional(self, risk_mult: float) -> float:
-        return TREND_REF_UNIT_500 * self.state.capital_scale * risk_mult
+    def trend_unit_notional(
+        self,
+        risk_mult: float,
+        current_equity: Optional[float] = None,
+    ) -> float:
+        """Profit-Only sqrt Trend sizing for a NEW Trend Trade.
+
+        The base reference is still 140U per 500U of starting capital.
+        Equity below the Strategy-v2 starting equity never shrinks the base
+        Unit.  Only accumulated profit increases future NEW-Trade Units.
+
+        The returned value must be stored on TrendTrade and reused unchanged
+        by every Pyramid Add belonging to that Trade.
+        """
+        starting = max(float(self.state.starting_equity or 500.0), 1e-9)
+        equity = float(current_equity if current_equity is not None else starting)
+        growth = math.sqrt(max(1.0, equity / starting))
+        base_unit = TREND_REF_UNIT_500 * float(self.state.capital_scale)
+        return base_unit * growth * float(risk_mult)
 
     def flex_sizes(self, equity: float, risk_mult: float) -> tuple[float,float]:
         base_scale = self.state.capital_scale
@@ -915,6 +952,8 @@ class StrategyV2LiveEngine:
                     opened_at=int(intent["opened_at"]),
                 )
             )
+            if not tr.locked_unit_notional:
+                tr.locked_unit_notional = float(tr.units[0].entry_notional)
             tr.fees += fee
             tr.max_units_seen=max(tr.max_units_seen,len(tr.units))
             if intent.get("swing_time") is not None:
@@ -1035,7 +1074,9 @@ class StrategyV2LiveEngine:
         if self.state.trend_lock <= 0:
             return
 
-        notional=self.trend_unit_notional(self.state.trend_lock)
+        notional=self.trend_unit_notional(
+            self.state.trend_lock, account["margin_balance"]
+        )
         signal_price=float(row["close"])
         price=float(execution_ref_price)
         qty=self.client.qty_for_notional(s,notional,price)
@@ -1057,6 +1098,7 @@ class StrategyV2LiveEngine:
             "opened_at":self.client.timestamp_ms(),
             "trade_start_equity":account["margin_balance"],
             "meta_risk_mult":self.state.trend_lock,
+            "locked_unit_notional":notional,
             "fees":0.0,"realized_core":0.0,"max_units_seen":0,
             "last_add_swing_time":swing,
             "tp_levels":[float(x) for x in tps],
@@ -1080,6 +1122,7 @@ class StrategyV2LiveEngine:
             "type":"TREND_OPEN","symbol":s,"direction":direction,
             "meta_state":meta["state"],"meta_score":meta["score"],
             "risk_mult":self.state.trend_lock,
+            "locked_unit_notional":notional,
             "notional":fill.quote_qty or fill.executed_qty*fill.avg_price,
             "qty":fill.executed_qty,"price":fill.avg_price,
             "order_id":fill.order_id,"client_order_id":fill.client_order_id,
@@ -1087,7 +1130,19 @@ class StrategyV2LiveEngine:
         }))
 
     def _add_trend(self,s,tr,swing_time,price,events):
-        notional=self.trend_unit_notional(tr.meta_risk_mult)
+        if tr.locked_unit_notional:
+            notional = float(tr.locked_unit_notional)
+        elif tr.units:
+            # Backward-compatibility safety for an already-open v2.0 Trade.
+            notional = float(tr.units[0].entry_notional)
+            tr.locked_unit_notional = notional
+        else:
+            # Defensive fallback only; normally every active Trade has Unit 1.
+            notional = self.trend_unit_notional(
+                tr.meta_risk_mult, tr.trade_start_equity
+            )
+            tr.locked_unit_notional = notional
+
         qty=self.client.qty_for_notional(s,notional,price)
         if qty<=0:return
         fill=self._submit({
@@ -1100,6 +1155,8 @@ class StrategyV2LiveEngine:
         events.append(self._event({
             "type":"TREND_ADD","symbol":s,"direction":tr.direction,
             "trade_id":tr.trade_id,"qty":fill.executed_qty,"price":fill.avg_price,
+            "notional":fill.quote_qty or fill.executed_qty*fill.avg_price,
+            "locked_unit_notional":notional,
             "units":len(tr.units),"order_id":fill.order_id,
             "client_order_id":fill.client_order_id,
         }))
@@ -1349,7 +1406,7 @@ class StrategyV2LiveEngine:
                 self.reconcile_or_halt()
             else:
                 raise BinanceLiveError(
-                    f"Strategy v2.0 is HALTED: {self.state.halt_reason}"
+                    f"Strategy v2.1 is HALTED: {self.state.halt_reason}"
                 )
 
         self.reconcile_or_halt()
@@ -1623,6 +1680,7 @@ class StrategyV2LiveEngine:
                     "avg_entry":trend_avg(tr),
                     "pnl":trend_pnl(tr,p),
                     "risk_mult":tr.meta_risk_mult,
+                    "locked_unit_notional":tr.locked_unit_notional,
                 }
         fc=self.state.flex_cycle
         flex=None
