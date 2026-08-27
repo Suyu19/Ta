@@ -402,7 +402,7 @@ class LiveStrategyV2DiscordBridge:
                 )
                 g=d.get("gates",{})
                 lines.append(
-                    f"↳ Gate：新增風險 {_mark(g.get('new_risk_enabled'))}｜"
+                    f"↳ Gate：新增風險 {_mark(g.get('new_risk_enabled'))}｜\n"
                     f"Cooldown {_mark(g.get('cooldown_ready'))} "
                     f"({int(g.get('cooldown_bars',0))} bars)"
                     + (f"｜Pending **{g.get('pending_kind')}**" if g.get('pending_kind') else "")
@@ -410,8 +410,8 @@ class LiveStrategyV2DiscordBridge:
             else:
                 lines.append(
                     f"**{coin} Trend：{tr.get('direction')} {tr.get('units')} units**｜"
-                    f"Avg {_fmt_p(tr.get('avg_entry'))}｜盈虧： {_fmt_u(tr.get('pnl'),True)}｜"
-                    f"Locked Unit {_fmt_u(tr.get('locked_unit_notional'))}\n"
+                    f"開倉價 {_fmt_p(tr.get('avg_entry'))}｜盈虧： {_fmt_u(tr.get('pnl'),True)}｜"
+                    f"此倉目前持有 {_fmt_u(tr.get('locked_unit_notional'))}\n"
                 )
 
         fx=status.get("flex")
@@ -420,7 +420,7 @@ class LiveStrategyV2DiscordBridge:
         else:
             lines.append(
                 f"BTC FLEX：LONG entries {fx.get('entries')}｜"
-                f"Avg {_fmt_p(fx.get('avg_entry'))}｜盈虧： {_fmt_u(fx.get('pnl'),True)}｜"
+                f"開倉價 {_fmt_p(fx.get('avg_entry'))}｜盈虧： {_fmt_u(fx.get('pnl'),True)}｜"
                 f"Hedge {float(fx.get('short_qty',0)):.6g} BTC"
             )
         if status.get("halted"):
