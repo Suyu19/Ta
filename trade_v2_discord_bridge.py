@@ -211,7 +211,7 @@ class LiveStrategyV2DiscordBridge:
             return (
                 f"🏁 **LIVE｜Trend 平倉**\n"
                 f"{coin}｜{direction}｜成交 **{_fmt_p(e.get('price'))}**\n"
-                f"策略內實現 PnL：約 **{_fmt_u(pnl,True)}**\n"
+                f"策略內實現盈虧：約 **{_fmt_u(pnl,True)}**\n"
                 f"原因：`{e.get('reason')}`\n"
                 f"Trade ID：`{e.get('trade_id')}`｜Order：`{order}`"
             )
@@ -370,7 +370,7 @@ class LiveStrategyV2DiscordBridge:
             d=diagnostics.get(s,{})
             if tr is None:
                 lines.append(
-                    f"**{coin} Trend：FLAT｜Entry Score "
+                    f"\n**{coin} Trend：FLAT｜Entry Score "
                     f"{d.get('score','—')}/{d.get('max_score',4)}｜"
                     f"方向 {d.get('direction','—')}**"
                 )
@@ -410,7 +410,7 @@ class LiveStrategyV2DiscordBridge:
             else:
                 lines.append(
                     f"**{coin} Trend：{tr.get('direction')} {tr.get('units')} units**｜"
-                    f"Avg {_fmt_p(tr.get('avg_entry'))}｜PnL {_fmt_u(tr.get('pnl'),True)}｜"
+                    f"Avg {_fmt_p(tr.get('avg_entry'))}｜盈虧： {_fmt_u(tr.get('pnl'),True)}｜"
                     f"Locked Unit {_fmt_u(tr.get('locked_unit_notional'))}\n"
                 )
 
@@ -420,7 +420,7 @@ class LiveStrategyV2DiscordBridge:
         else:
             lines.append(
                 f"BTC FLEX：LONG entries {fx.get('entries')}｜"
-                f"Avg {_fmt_p(fx.get('avg_entry'))}｜PnL {_fmt_u(fx.get('pnl'),True)}｜"
+                f"Avg {_fmt_p(fx.get('avg_entry'))}｜盈虧： {_fmt_u(fx.get('pnl'),True)}｜"
                 f"Hedge {float(fx.get('short_qty',0)):.6g} BTC"
             )
         if status.get("halted"):
