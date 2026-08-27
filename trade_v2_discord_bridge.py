@@ -335,8 +335,8 @@ class LiveStrategyV2DiscordBridge:
             f"DD **{float(a.get('portfolio_dd',0))*100:.2f}%**",
             f"Initial Margin：**{_fmt_u(a.get('initial_margin'))}**｜"
             f"Util **{float(a.get('initial_margin_util',0))*100:.2f}%**",
-            f"\n\nTrend Lock **{float(status.get('trend_lock',0))*100:.0f}%**｜"
-            f"\nFLEX Lock **{float(status.get('flex_lock',0))*100:.0f}%**\n",
+            f"Trend Lock **{float(status.get('trend_lock',0))*100:.0f}%**｜"
+            f"FLEX Lock **{float(status.get('flex_lock',0))*100:.0f}%**\n",
         ]
 
         # Global Meta 0/6 breakdown.  This is deliberately separate from
@@ -411,7 +411,7 @@ class LiveStrategyV2DiscordBridge:
                 lines.append(
                     f"**{coin} Trend：{tr.get('direction')} {tr.get('units')} units**｜"
                     f"Avg {_fmt_p(tr.get('avg_entry'))}｜PnL {_fmt_u(tr.get('pnl'),True)}｜"
-                    f"Locked Unit {_fmt_u(tr.get('locked_unit_notional'))}"
+                    f"Locked Unit {_fmt_u(tr.get('locked_unit_notional'))}\n"
                 )
 
         fx=status.get("flex")
