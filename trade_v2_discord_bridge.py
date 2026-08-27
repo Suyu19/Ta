@@ -327,15 +327,15 @@ class LiveStrategyV2DiscordBridge:
         a=status.get("account",{})
         meta=status.get("meta",{})
         lines=[
-            "🚨 **Strategy v2.1 LIVE 狀態**\n",
-            f"\n新增風險：**{'ENABLED' if self.new_risk_enabled else 'PAUSED'}**",
-            f"\nMeta：**{meta.get('state')}**｜Score **{meta.get('score')}/6**",
-            f"\nEquity：**{_fmt_u(a.get('margin_balance'))}**｜"
-            f"\nWallet **{_fmt_u(a.get('wallet_balance'))}**｜"
-            f"\nDD **{float(a.get('portfolio_dd',0))*100:.2f}%**",
-            f"\nInitial Margin：**{_fmt_u(a.get('initial_margin'))}**｜"
-            f"\nUtil **{float(a.get('initial_margin_util',0))*100:.2f}%**",
-            f"\nTrend Lock **{float(status.get('trend_lock',0))*100:.0f}%**｜"
+            "🚨 **Strategy v2.1 LIVE 狀態**",
+            f"新增風險：**{'ENABLED' if self.new_risk_enabled else 'PAUSED'}**",
+            f"Meta：**{meta.get('state')}**｜Score **{meta.get('score')}/6**",
+            f"Equity：**{_fmt_u(a.get('margin_balance'))}**｜"
+            f"Wallet **{_fmt_u(a.get('wallet_balance'))}**｜"
+            f"DD **{float(a.get('portfolio_dd',0))*100:.2f}%**",
+            f"Initial Margin：**{_fmt_u(a.get('initial_margin'))}**｜"
+            f"Util **{float(a.get('initial_margin_util',0))*100:.2f}%**",
+            f"\n\nTrend Lock **{float(status.get('trend_lock',0))*100:.0f}%**｜"
             f"\nFLEX Lock **{float(status.get('flex_lock',0))*100:.0f}%**\n",
         ]
 
@@ -350,17 +350,17 @@ class LiveStrategyV2DiscordBridge:
             sept=mc.get("ema_separation_non_declining",{})
             lines += [
                 "",
-                "**Meta Score 明細（全域 0/6）**",
-                f"{_mark(al.get('ok'))} 1D/4H 同方向：{al.get('direction','—')} "
-                f"(**+{int(al.get('points',0))}/2**)",
+                f"**Meta Score 明細（全域 {meta.get('score', 0)}/6）**",
+                f"{_mark(al.get('ok'))} 1D/4H 同方向：{al.get('direction', '—')} "
+                f"(**+{int(al.get('points', 0))}/2**)",
                 f"{_mark(adx.get('ok'))} 4H ADX ≥25："
                 f"{_fmt_num(adx.get('value'))}",
                 f"{_mark(adxt.get('ok'))} ADX 未衰退："
                 f"{_fmt_num(adxt.get('value'))} vs 2根前 {_fmt_num(adxt.get('lag2'))}",
                 f"{_mark(sep.get('ok'))} EMA Separation ≥0.75 ATR："
-                f"{_fmt_num(sep.get('value'),3)} ATR",
+                f"{_fmt_num(sep.get('value'), 3)} ATR",
                 f"{_mark(sept.get('ok'))} Separation 未縮小："
-                f"{_fmt_num(sept.get('value'),3)} vs 2根前 {_fmt_num(sept.get('lag2'),3)}",
+                f"{_fmt_num(sept.get('value'), 3)} vs 2根前 {_fmt_num(sept.get('lag2'), 3)}",
             ]
 
         diagnostics=status.get("trend_entry_diagnostics",{})
