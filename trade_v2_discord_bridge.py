@@ -402,14 +402,14 @@ class LiveStrategyV2DiscordBridge:
                 )
                 g=d.get("gates",{})
                 lines.append(
-                    f"↳ Gate：新增風險 {_mark(g.get('new_risk_enabled'))}｜\n"
-                    f"Cooldown {_mark(g.get('cooldown_ready'))} "
+                    f"↳ Gate：新增風險 {_mark(g.get('new_risk_enabled'))}｜"
+                    f"Cooldown {_mark(g.get('cooldown_ready'))}"
                     f"({int(g.get('cooldown_bars',0))} bars)"
                     + (f"｜Pending **{g.get('pending_kind')}**" if g.get('pending_kind') else "")
                 )
             else:
                 lines.append(
-                    f"**{coin} Trend：{tr.get('direction')} {tr.get('units')} units**｜"
+                    f"\n目前持倉：**{coin} Trend：{tr.get('direction')} {tr.get('units')} units**｜"
                     f"開倉價 {_fmt_p(tr.get('avg_entry'))}｜盈虧： {_fmt_u(tr.get('pnl'),True)}｜"
                     f"此倉目前持有 {_fmt_u(tr.get('locked_unit_notional'))}\n"
                 )
