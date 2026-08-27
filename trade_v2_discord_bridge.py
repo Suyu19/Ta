@@ -350,7 +350,7 @@ class LiveStrategyV2DiscordBridge:
             sept=mc.get("ema_separation_non_declining",{})
             lines += [
                 "",
-                "**Meta Score 明細（全域 0/6）**",
+                f"**Meta Score 明細（全域 {meta.get('score', 0)}/6）**",
                 f"{_mark(al.get('ok'))} 1D/4H 同方向：{al.get('direction','—')} "
                 f"(**+{int(al.get('points',0))}/2**)",
                 f"{_mark(adx.get('ok'))} 4H ADX ≥25："
