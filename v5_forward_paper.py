@@ -92,10 +92,10 @@ SLIPPAGE_BPS = 2.0
 
 ADX_THRESHOLD = 20.0
 
-POLL_SECONDS = 20
+POLL_SECONDS = 60
 
 # We need enough 15m history to build stable 4H indicators.
-KLINE_LIMIT = 1500
+KLINE_LIMIT = 1000
 
 BASE_URL = "https://fapi.binance.com"
 
@@ -474,26 +474,138 @@ def append_csv(
 
 session = requests.Session()
 
+# Binance rate-limit safety.
+#
+# Forward Paper only consumes PUBLIC market data.  It does not use
+# signed endpoints, therefore exact Binance server-time synchronization
+# is unnecessary.  Railway/container clocks are NTP-synchronized well
+# enough for deciding whether a 15m candle has closed.
+MAX_PUBLIC_GET_RETRIES = 4
+DEFAULT_429_BACKOFF_SECONDS = 60
+
+# Funding normally changes only around scheduled funding timestamps.
+# Polling it every 20/60 seconds wastes IP request budget.  Delaying the
+# accounting by a few minutes does not change which historical funding
+# event belongs to a trade because apply_new_funding() checks event time.
+FUNDING_POLL_INTERVAL_SECONDS = 300
+_last_funding_poll_monotonic = {
+    symbol: 0.0
+    for symbol in SYMBOLS
+}
+
+
+def _retry_after_seconds(
+    response: requests.Response,
+    attempt: int,
+) -> int:
+    raw = response.headers.get(
+        "Retry-After"
+    )
+
+    if raw:
+        try:
+            return max(
+                1,
+                int(
+                    float(
+                        raw
+                    )
+                ),
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            pass
+
+    # Conservative fallback if Binance/proxy omitted Retry-After.
+    return min(
+        300,
+        DEFAULT_429_BACKOFF_SECONDS
+        * (
+            2 ** attempt
+        ),
+    )
+
 
 def public_get(
     path: str,
     params: Optional[dict] = None,
 ):
-    response = session.get(
-        BASE_URL + path,
-        params=params,
-        timeout=15,
-    )
+    last_error = None
 
-    response.raise_for_status()
-    return response.json()
+    for attempt in range(
+        MAX_PUBLIC_GET_RETRIES
+    ):
+        response = session.get(
+            BASE_URL + path,
+            params=params,
+            timeout=15,
+        )
+
+        if response.status_code in (
+            418,
+            429,
+        ):
+            wait_seconds = (
+                _retry_after_seconds(
+                    response,
+                    attempt,
+                )
+            )
+
+            used_weight = (
+                response.headers.get(
+                    "X-MBX-USED-WEIGHT-1M"
+                )
+                or response.headers.get(
+                    "x-mbx-used-weight-1m"
+                )
+            )
+
+            print(
+                "[binance] rate limited | "
+                f"status={response.status_code} | "
+                f"path={path} | "
+                f"used_weight_1m={used_weight} | "
+                f"retry_after={wait_seconds}s",
+                flush=True,
+            )
+
+            last_error = (
+                requests.HTTPError(
+                    (
+                        f"{response.status_code} "
+                        f"rate limit for {path}"
+                    ),
+                    response=response,
+                )
+            )
+
+            time.sleep(
+                wait_seconds
+            )
+
+            continue
+
+        response.raise_for_status()
+
+        return response.json()
+
+    if last_error is not None:
+        raise last_error
+
+    raise RuntimeError(
+        f"public_get failed unexpectedly: {path}"
+    )
 
 
 def server_time_ms() -> int:
+    # Do NOT call /fapi/v1/time every cycle.
+    # No signed request in Forward Paper needs server timestamp.
     return int(
-        public_get(
-            "/fapi/v1/time"
-        )["serverTime"]
+        time.time()
+        * 1000
     )
 
 
@@ -570,6 +682,22 @@ def fetch_recent_funding(
     symbol: str,
     start_ms: Optional[int],
 ) -> List[dict]:
+    now_mono = time.monotonic()
+
+    last_poll = (
+        _last_funding_poll_monotonic.get(
+            symbol,
+            0.0,
+        )
+    )
+
+    if (
+        now_mono
+        - last_poll
+        < FUNDING_POLL_INTERVAL_SECONDS
+    ):
+        return []
+
     params = {
         "symbol": symbol,
         "limit": 100,
@@ -587,6 +715,10 @@ def fetch_recent_funding(
         "/fapi/v1/fundingRate",
         params,
     )
+
+    _last_funding_poll_monotonic[
+        symbol
+    ] = now_mono
 
     return data
 

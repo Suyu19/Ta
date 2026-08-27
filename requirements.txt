@@ -1,3 +1,6 @@
 discord.py[voice]
 python-dotenv
 yt-dlp
+pandas
+requests
+aiohttp

@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from trade_discord_bridge import TradeDiscordBridge
 
-print("BOOT VERSION: 2026-08-26-dual-forward-paper-discord-cloud-1", flush=True)
+print("BOOT VERSION: 2026-08-27-strategy-v2-meta-live-selector-1", flush=True)
 
 # =========================
 # 基本設定
@@ -81,7 +81,7 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # =========================
-# Forward Paper / Discord 雲端橋接
+# Strategy v2.0 / Forward Paper Discord 橋接（由 TRADE_MODE 選擇）
 # =========================
 # TRADE_CHANNEL_ID 可指定獨立交易頻道；若未設定，暫時沿用 CRYPTO_ALERT_CHANNEL_ID。
 # 雲端部署時請把 TRADE_DATA_DIR 指向「持久化磁碟」，例如 /data/trading。
@@ -1579,7 +1579,7 @@ async def trade_control(ctx: commands.Context, action: str = "status"):
 
     if action in {"stop", "pause", "停止", "暫停"}:
         if not _is_admin(ctx):
-            await ctx.send("❌ 只有管理員可以暫停 Forward Paper 新增風險。")
+            await ctx.send("❌ 只有管理員可以暫停交易系統新增風險。")
             return
 
         await ctx.send(await trade_bridge.pause_new_risk())
@@ -1587,7 +1587,7 @@ async def trade_control(ctx: commands.Context, action: str = "status"):
 
     if action in {"start", "resume", "開始", "恢復"}:
         if not _is_admin(ctx):
-            await ctx.send("❌ 只有管理員可以恢復 Forward Paper 新增風險。")
+            await ctx.send("❌ 只有管理員可以恢復交易系統新增風險。")
             return
 
         await ctx.send(await trade_bridge.resume_new_risk())
@@ -1616,7 +1616,7 @@ async def start_command(ctx: commands.Context, mode: str = ""):
         return
 
     if not _is_admin(ctx):
-        await ctx.send("❌ 只有管理員可以恢復 Forward Paper 新增風險。")
+        await ctx.send("❌ 只有管理員可以恢復交易系統新增風險。")
         return
 
     await ctx.send(await trade_bridge.resume_new_risk())
@@ -1633,13 +1633,13 @@ async def custom_help(ctx: commands.Context):
         "  setalert <幣種> <價格>  設定價格提醒\n"
         "  alerts  查看目前未觸發的價格提醒\n"
         "  delalert <幣種> <價格>  刪除價格提醒\n\n"
-        "【Forward Paper 交易系統】\n"
-        "  trade status  查看 Champion / Challenger 狀態\n"
-        "  trade stop  暫停開新倉與加倉（現有倉仍會安全管理；管理員）\n"
-        "  trade start  恢復開新倉與加倉（管理員）\n"
+        "【交易系統（TRADE_MODE=paper / live）】\n"
+        "  trade status  查看目前交易策略 / 真實帳戶狀態\n"
+        "  trade stop  暫停 OPEN / ADD（現有倉仍持續執行風險管理；管理員）\n"
+        "  trade start  恢復 OPEN / ADD（管理員；LIVE 時會恢復真實新增風險）\n"
         "  trade test  測試交易頻道通報（管理員）\n"
         "  stop trade / start trade  可作為上述 stop/start 的快捷指令\n"
-        "  每天 20:00 自動發送 Champion / Challenger 今日盈虧摘要\n\n"
+        "  每天 20:00 自動發送交易摘要\n  ⚠️ TRADE_MODE=live 時 OPEN / ADD / TP / EXIT / Hedge 皆為真實 Binance Futures 訂單\n\n"
         "  income <suyu/gary/win> <金額> <事由>  新增收入，例如：!income win 1000 打工薪水\n"
         "  expense <suyu/gary/win> <金額> <事由>  新增支出，例如：!expense win 120 午餐\n"
         "  setbalance <suyu/gary/win> <金額>  手動設定餘額，例如：!setbalance win 5000\n"
@@ -1850,7 +1850,7 @@ async def stop_audio(ctx: commands.Context, mode: str = ""):
     # !stop trade：暫停「新增風險」，但不凍結既有持倉的 TP / Stop / Funding。
     if mode.strip().lower() == "trade":
         if not _is_admin(ctx):
-            await ctx.send("❌ 只有管理員可以暫停 Forward Paper 新增風險。")
+            await ctx.send("❌ 只有管理員可以暫停交易系統新增風險。")
             return
 
         await ctx.send(await trade_bridge.pause_new_risk())
