@@ -1201,6 +1201,46 @@ class StrategyV2LiveEngine:
             "reference_price":price,"opened_at":self.client.timestamp_ms(),
             "swing_time":swing_time,
         })
+        # --- Strategy v2.1 Stale Structural TP Guard ---
+        # A newly-added Pyramid Unit must never be immediately trimmed by
+        # an old Structural TP that is already behind that new Unit.
+        #
+        # LONG  -> keep only unhit TP > newest Unit fill price
+        # SHORT -> keep only unhit TP < newest Unit fill price
+        #
+        # IMPORTANT: do NOT manufacture new TP levels here.
+        newest_unit_entry = float(fill.avg_price)
+
+        old_tp_levels = list(tr.tp_levels)
+        old_tp_hit = list(tr.tp_hit)
+        kept_tp_levels = []
+
+        for tp_idx, tp_level in enumerate(old_tp_levels):
+            already_hit = (
+                tp_idx < len(old_tp_hit)
+                and bool(old_tp_hit[tp_idx])
+            )
+            if already_hit:
+                continue
+
+            tp_level = float(tp_level)
+
+            if tr.direction == "LONG":
+                if tp_level > newest_unit_entry:
+                    kept_tp_levels.append(tp_level)
+            else:
+                if tp_level < newest_unit_entry:
+                    kept_tp_levels.append(tp_level)
+
+        tr.tp_levels = sorted(
+            set(kept_tp_levels),
+            reverse=(tr.direction == "SHORT"),
+        )
+        tr.tp_hit = [False] * len(tr.tp_levels)
+
+        # _submit() already persisted the fill. Persist the TP cleanup too,
+        # so a Railway restart cannot restore stale pre-ADD TP levels.
+        self.save()
         events.append(self._event({
             "type":"TREND_ADD","symbol":s,"direction":tr.direction,
             "trade_id":tr.trade_id,"qty":fill.executed_qty,"price":fill.avg_price,
