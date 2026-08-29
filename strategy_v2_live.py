@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Strategy v2.1 live engine
+Strategy v2.2 live engine — Max8 + G65
 =========================
 
 Meta SAFE v1.1 + two child engines on ONE real Binance USDⓈ-M Futures wallet.
@@ -42,10 +42,8 @@ TRANS_BEAR: Trend 70 / FLEX 0 / cash 30
 RANGE:      Trend 40 / FLEX 60
 
 Portfolio drawdown governor, applied ONLY when a sleeve opens:
-DD <10%   x1.00
-10~15%    x0.95
-15~20%    x0.80
->=20%     x0.65
+DD <15%   x1.00
+>=15%     x0.65
 
 Important live differences from historical simulator
 -----------------------------------------------------
@@ -54,7 +52,7 @@ Important live differences from historical simulator
   the TP level. It cannot retroactively fill an intrabar spike that occurred
   between polls.
 - Actual account equity/margin controls Meta DD and global new-risk guard.
-- Strategy v2.1 requires a dedicated Futures account/wallet. Do not mix
+- Strategy v2.2 requires a dedicated Futures account/wallet. Do not mix
   unrelated manual futures positions while this engine is active.
 """
 
@@ -81,10 +79,10 @@ from binance_futures_live import (
 )
 
 
-STRATEGY_VERSION = "2.1-META-SAFE-V1.1-PROFIT-SQRT"
+STRATEGY_VERSION = "2.2-MAX8-G65-META-SAFE-V1.1-PROFIT-SQRT"
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
 TREND_REF_UNIT_500 = 140.0
-TREND_MAX_UNITS = 7
+TREND_MAX_UNITS = 8
 FLEX_LEVERAGE = 10.0
 FLEX_INITIAL_MARGIN_500 = 12.0
 FLEX_ADD_MARGIN_500 = 8.0
@@ -279,7 +277,7 @@ def state_from_dict(d: dict) -> V2State:
     st.flex_cycle = _flex_from(d.get("flex_cycle"))
     st.flex_pending = _pending_from(d.get("flex_pending"))
 
-    # State schema is backward-compatible; mark the migrated state as v2.1.
+    # State schema is backward-compatible; mark the migrated state as the current strategy version.
     st.strategy_version = STRATEGY_VERSION
     return st
 
@@ -651,11 +649,11 @@ class StrategyV2LiveEngine:
         # Read-only safety checks happen BEFORE changing leverage/margin mode.
         if not self.client.position_mode():
             raise BinanceLiveError(
-                "Strategy v2.1 requires Binance Futures Hedge Mode."
+                "Strategy v2.2 requires Binance Futures Hedge Mode."
             )
         if self.client.multi_assets_mode():
             raise BinanceLiveError(
-                "Strategy v2.1 requires Single-Asset Mode."
+                "Strategy v2.2 requires Single-Asset Mode."
             )
         acct_perm = self.client.account_v2()
         if not self.client._as_bool(acct_perm.get("canTrade")):
@@ -673,7 +671,7 @@ class StrategyV2LiveEngine:
             ]
             if unrelated or orders:
                 raise BinanceLiveError(
-                    "Strategy v2.1 expects a dedicated Futures account. "
+                    "Strategy v2.2 expects a dedicated Futures account. "
                     "Unrelated positions or open orders were found. "
                     "Close them first; LIVE_ALLOW_OTHER_FUTURES_POSITIONS=true "
                     "weakens this protection and is not recommended."
@@ -687,7 +685,7 @@ class StrategyV2LiveEngine:
             ]
             if btc_eth_dirty:
                 raise BinanceLiveError(
-                    "Fresh Strategy v2.1 LIVE state requires BTCUSDT/ETHUSDT "
+                    "Fresh Strategy v2.2 LIVE state requires BTCUSDT/ETHUSDT "
                     "to be flat. The bot will not adopt pre-existing manual positions."
                 )
 
@@ -895,9 +893,9 @@ class StrategyV2LiveEngine:
 
     @staticmethod
     def governor(dd: float) -> float:
-        if dd >= .20: return .65
-        if dd >= .15: return .80
-        if dd >= .10: return .95
+        # v2.2 G65: keep full sleeve allocation below 15% portfolio DD;
+        # once DD reaches 15%, cut NEW sleeve risk to 65%.
+        if dd >= .15: return .65
         return 1.0
 
     def desired_lock(self, meta_state: str, sleeve: str, dd: float) -> float:
@@ -1201,7 +1199,7 @@ class StrategyV2LiveEngine:
             "reference_price":price,"opened_at":self.client.timestamp_ms(),
             "swing_time":swing_time,
         })
-        # --- Strategy v2.1 Stale Structural TP Guard ---
+        # --- Strategy v2.x Stale Structural TP Guard ---
         # A newly-added Pyramid Unit must never be immediately trimmed by
         # an old Structural TP that is already behind that new Unit.
         #
@@ -1495,7 +1493,7 @@ class StrategyV2LiveEngine:
                 self.reconcile_or_halt()
             else:
                 raise BinanceLiveError(
-                    f"Strategy v2.1 is HALTED: {self.state.halt_reason}"
+                    f"Strategy v2.2 is HALTED: {self.state.halt_reason}"
                 )
 
         self.reconcile_or_halt()

@@ -19,7 +19,7 @@ from binance_futures_live import BinanceFuturesLive
 def main():
     c=BinanceFuturesLive()
     print("="*72)
-    print("Strategy v2.0 Binance LIVE preflight — READ ONLY")
+    print("Strategy v2.2 Binance LIVE preflight — READ ONLY")
     print("="*72)
 
     print("Hedge Mode      :", c.position_mode())
