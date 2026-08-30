@@ -35,7 +35,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlencode
 
@@ -61,6 +61,10 @@ class SymbolFilter:
     min_qty: float
     max_qty: float
     min_notional: float
+    price_tick: float = 0.0
+    limit_qty_step: float = 0.0
+    limit_min_qty: float = 0.0
+    limit_max_qty: float = 0.0
 
 
 @dataclass
@@ -358,12 +362,18 @@ class BinanceFuturesLive:
         for item in info.get("symbols", []):
             symbol = item.get("symbol")
             fmap = {x.get("filterType"): x for x in item.get("filters", [])}
-            lot = fmap.get("MARKET_LOT_SIZE") or fmap.get("LOT_SIZE") or {}
+            market_lot = fmap.get("MARKET_LOT_SIZE") or fmap.get("LOT_SIZE") or {}
+            limit_lot = fmap.get("LOT_SIZE") or market_lot
+            price_filter = fmap.get("PRICE_FILTER") or {}
             notional = fmap.get("MIN_NOTIONAL") or {}
             try:
-                step = float(lot.get("stepSize", "0"))
-                min_qty = float(lot.get("minQty", "0"))
-                max_qty = float(lot.get("maxQty", "0"))
+                step = float(market_lot.get("stepSize", "0"))
+                min_qty = float(market_lot.get("minQty", "0"))
+                max_qty = float(market_lot.get("maxQty", "0"))
+                limit_step = float(limit_lot.get("stepSize", step or 0))
+                limit_min = float(limit_lot.get("minQty", min_qty or 0))
+                limit_max = float(limit_lot.get("maxQty", max_qty or 0))
+                price_tick = float(price_filter.get("tickSize", "0"))
                 min_notional = float(
                     notional.get("notional")
                     or notional.get("minNotional")
@@ -378,6 +388,10 @@ class BinanceFuturesLive:
                     min_qty=min_qty,
                     max_qty=max_qty,
                     min_notional=min_notional,
+                    price_tick=price_tick,
+                    limit_qty_step=limit_step,
+                    limit_min_qty=limit_min,
+                    limit_max_qty=limit_max,
                 )
 
         self._filters = filt
@@ -407,6 +421,30 @@ class BinanceFuturesLive:
             q = min(q, f.max_qty)
             q = self._floor_step(q, f.qty_step)
         return q
+
+    def round_limit_qty(self, symbol: str, qty: float) -> float:
+        f = self.symbol_filter(symbol)
+        step = f.limit_qty_step or f.qty_step
+        min_qty = f.limit_min_qty or f.min_qty
+        max_qty = f.limit_max_qty or f.max_qty
+        q = self._floor_step(abs(float(qty)), step)
+        if q < min_qty:
+            return 0.0
+        if max_qty > 0:
+            q = min(q, max_qty)
+            q = self._floor_step(q, step)
+        return q
+
+    def round_price(self, symbol: str, price: float, *, side: str) -> float:
+        f = self.symbol_filter(symbol)
+        tick = float(f.price_tick or 0.0)
+        if tick <= 0:
+            return float(price)
+        dval = Decimal(str(float(price)))
+        dtick = Decimal(str(tick))
+        rounding = ROUND_DOWN if side.upper() == "BUY" else ROUND_UP
+        units = (dval / dtick).to_integral_value(rounding=rounding)
+        return float(units * dtick)
 
     def qty_for_notional(self, symbol: str, notional: float, price: float) -> float:
         if notional <= 0 or price <= 0:
@@ -548,6 +586,112 @@ class BinanceFuturesLive:
             raw=raw,
         )
 
+    def cancel_order(
+        self,
+        symbol: str,
+        *,
+        order_id: Optional[int] = None,
+        client_order_id: Optional[str] = None,
+    ) -> dict:
+        p = {"symbol": symbol}
+        if order_id is not None:
+            p["orderId"] = int(order_id)
+        elif client_order_id:
+            p["origClientOrderId"] = client_order_id
+        else:
+            raise ValueError("order_id or client_order_id required")
+        try:
+            return self.signed_delete("/fapi/v1/order", p)
+        except BinanceLiveError as exc:
+            # If an order filled/cancelled during the DELETE race, the caller
+            # can query the final state by its id.  Do not hide unrelated errors.
+            if any(code in str(exc) for code in ("code=-2011", "code=-2013")):
+                try:
+                    return self.query_order(
+                        symbol, order_id=order_id, client_order_id=client_order_id
+                    )
+                except Exception:
+                    pass
+            raise
+
+    def limit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        position_side: str,
+        qty: float,
+        price: float,
+        client_order_id: str,
+        reducing: bool,
+        post_only: bool = True,
+    ) -> dict:
+        """Place a persistent LIMIT order.
+
+        Range Alpha uses GTX (post-only) so an entry/TP that would cross the
+        book is rejected instead of silently paying taker fees.  In Hedge Mode
+        Binance does not accept reduceOnly; risk-reducing quantities are capped
+        against the live position before submission.
+        """
+        side = side.upper()
+        position_side = position_side.upper()
+        if not self.CLIENT_ID_RE.match(client_order_id):
+            raise BinanceLiveError(
+                f"Invalid clientOrderId format: {client_order_id!r}"
+            )
+
+        qty = self.round_limit_qty(symbol, qty)
+        price = self.round_price(symbol, price, side=side)
+        if qty <= 0 or price <= 0:
+            raise BinanceLiveError(
+                f"{symbol} LIMIT qty/price rounds below exchange minimum."
+            )
+        f = self.symbol_filter(symbol)
+        if f.min_notional > 0 and qty * price < f.min_notional:
+            raise BinanceLiveError(
+                f"{symbol} LIMIT notional {qty*price:.8g} is below "
+                f"minNotional {f.min_notional:.8g}."
+            )
+
+        if reducing:
+            live_qty = self.real_position_qty(symbol, position_side)
+            qty = self.round_limit_qty(symbol, min(qty, live_qty))
+            if qty <= 0:
+                raise BinanceLiveError(
+                    f"No {symbol} {position_side} live quantity remains to reduce."
+                )
+        else:
+            self.check_new_risk(qty * price)
+
+        params = {
+            "symbol": symbol,
+            "side": side,
+            "positionSide": position_side,
+            "type": "LIMIT",
+            "timeInForce": "GTX" if post_only else "GTC",
+            "quantity": self._format_decimal(qty),
+            "price": self._format_decimal(price),
+            "newClientOrderId": client_order_id,
+            # ACK is intentional for persistent GTX orders. Binance documents
+            # that RESULT with special LIMIT timeInForce can wait for a final
+            # order state; Range Alpha needs an immediate order id and then
+            # manages the resting order explicitly via query/cancel.
+            "newOrderRespType": "ACK",
+        }
+        try:
+            return self.signed_post("/fapi/v1/order", params)
+        except (requests.RequestException, BinanceLiveError) as exc:
+            # Same idempotency rule as MARKET: a network failure after POST
+            # must be resolved by querying the exact client id before retrying.
+            try:
+                return self.query_order(symbol, client_order_id=client_order_id)
+            except Exception:
+                raise exc
+
+    def ticker_price(self, symbol: str) -> float:
+        raw = self.public_get("/fapi/v1/ticker/price", {"symbol": symbol})
+        return float(raw.get("price", 0.0) or 0.0)
+
     def market_order(
         self,
         *,
@@ -641,5 +785,11 @@ class BinanceFuturesLive:
 
     @staticmethod
     def _format_decimal(value: float) -> str:
-        s = f"{value:.12f}".rstrip("0").rstrip(".")
+        # Decimal(str(...)) avoids binary-float tails such as
+        # 79999.899999999994 after tick rounding. Binance filter validation is
+        # strict, so send a clean fixed-point decimal string.
+        d = Decimal(str(value))
+        s = format(d.normalize(), "f")
+        if "." in s:
+            s = s.rstrip("0").rstrip(".")
         return s or "0"

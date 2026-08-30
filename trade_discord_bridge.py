@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Strategy v2.2 LIVE bridge compatibility wrapper.
+Strategy v2.2 + BTC Range Alpha LIVE bridge compatibility wrapper.
 
 bot.py imports:
     from trade_discord_bridge import TradeDiscordBridge

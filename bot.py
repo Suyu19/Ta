@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from trade_discord_bridge import TradeDiscordBridge
 
-print("BOOT VERSION: 2026-08-30-strategy-v2.2-max8-g65-1", flush=True)
+print("BOOT VERSION: 2026-08-30-strategy-v2.2-range-alpha-live1", flush=True)
 
 # =========================
 # 基本設定
@@ -81,7 +81,7 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # =========================
-# Strategy v2.0 / Forward Paper Discord 橋接（由 TRADE_MODE 選擇）
+# Strategy v2.2 + Range Alpha / Forward Paper Discord 橋接
 # =========================
 # TRADE_CHANNEL_ID 可指定獨立交易頻道；若未設定，暫時沿用 CRYPTO_ALERT_CHANNEL_ID。
 # 雲端部署時請把 TRADE_DATA_DIR 指向「持久化磁碟」，例如 /data/trading。

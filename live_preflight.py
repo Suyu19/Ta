@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Read-only Strategy v2.0 LIVE preflight.
+Read-only Strategy v2.2 + BTC Range Alpha LIVE preflight.
 NO ORDERS are sent.
 
 Checks:
@@ -9,7 +9,7 @@ Checks:
 - Futures canTrade
 - Hedge Mode
 - Single-Asset Mode
-- BTC/ETH exchange filters
+- BTC/ETH exchange filters (BTC LIMIT tick/lot used by Range Alpha)
 - current positions/open orders
 - wallet/margin snapshot
 """
@@ -19,14 +19,14 @@ from binance_futures_live import BinanceFuturesLive
 def main():
     c=BinanceFuturesLive()
     print("="*72)
-    print("Strategy v2.2 Binance LIVE preflight — READ ONLY")
+    print("Strategy v2.2 + Range Alpha Binance LIVE preflight — READ ONLY")
     print("="*72)
 
     print("Hedge Mode      :", c.position_mode())
     print("Multi-Assets    :", c.multi_assets_mode())
 
-    acct=c.account()
-    print("canTrade        :", acct.get("canTrade"))
+    acct_perm=c.account_v2()
+    print("canTrade        :", acct_perm.get("canTrade"))
     snap=c.margin_snapshot()
     print("Margin Balance  :", snap["margin_balance"], "USDT")
     print("Wallet Balance  :", snap["wallet_balance"], "USDT")
@@ -38,6 +38,14 @@ def main():
     print("\nBTC/ETH filters:")
     for s in ("BTCUSDT","ETHUSDT"):
         print(" ", c.symbol_filter(s))
+
+    btc_price=c.ticker_price("BTCUSDT")
+    ra_qty=0.003 if btc_price < 100000 else 0.002
+    ra_qty=c.round_limit_qty("BTCUSDT",ra_qty)
+    print("\nRange Alpha sizing (READ ONLY):")
+    print("  BTC price      :", btc_price)
+    print("  fixed qty      :", ra_qty, "BTC")
+    print("  approx notional:", ra_qty*btc_price, "USDT")
 
     print("\nNon-zero positions:")
     dirty=False

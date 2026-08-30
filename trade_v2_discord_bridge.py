@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Discord bridge for Strategy v2.2 LIVE trading.
+Discord bridge for Strategy v2.2 + BTC Range Alpha LIVE trading.
 
 This module is selected only by trade_discord_bridge.py when TRADE_MODE=live.
 """
@@ -134,7 +134,7 @@ class LiveStrategyV2DiscordBridge:
             StrategyV2LiveEngine,
             self.data_root/"strategy_v2_live",
         )
-        print("[trade-live] Strategy v2.2 live engine loaded.",flush=True)
+        print("[trade-live] Strategy v2.2 + Range Alpha live engine loaded.",flush=True)
 
     async def _run_loop(self):
         await self.bot.wait_until_ready()
@@ -258,7 +258,47 @@ class LiveStrategyV2DiscordBridge:
                 f"原因 `{e.get('reason')}`｜Cycle `{e.get('cycle_id')}`\n"
                 f"Order：`{order}`"
             )
-        return f"ℹ️ **LIVE Strategy v2.2**\n```json\n{json.dumps(e,ensure_ascii=False)[:1700]}\n```"
+        if typ=="RANGE_ENTRY_PENDING":
+            return (
+                f"🟡 **LIVE｜Range Alpha Maker 掛單**\n"
+                f"BTC｜LONG｜Qty **{e.get('qty')}**｜Limit **{_fmt_p(e.get('limit_price'))}**\n"
+                f"Signal **{_fmt_p(e.get('signal_price'))}**｜Cycle `{e.get('cycle_id')}`\n"
+                f"Order：`{order}`｜Client：`{cid}`"
+            )
+        if typ=="RANGE_ENTRY_CANCEL":
+            return (
+                f"⚪ **LIVE｜Range Alpha 掛單取消**\n"
+                f"Cycle `{e.get('cycle_id')}`｜原因 `{e.get('reason')}`"
+            )
+        if typ=="RANGE_OPEN":
+            return (
+                f"🟢 **LIVE｜Range Alpha 成交**\n"
+                f"BTC｜LONG｜Qty **{e.get('qty')}**｜成交 **{_fmt_p(e.get('price'))}**\n"
+                f"TP **{_fmt_p(e.get('tp_price'))}**｜Stop **{_fmt_p(e.get('stop_price'))}**｜"
+                f"Max Hold **{e.get('max_hold_hours')}h**\n"
+                f"Cycle `{e.get('cycle_id')}`｜Order `{order}`"
+            )
+        if typ=="RANGE_TP_FILL":
+            return (
+                f"💰 **LIVE｜Range Alpha TP Fill**\n"
+                f"BTC｜Qty **{e.get('qty')}**｜成交 **{_fmt_p(e.get('price'))}**｜"
+                f"剩餘 **{e.get('remaining_qty')} BTC**\n"
+                f"Cycle `{e.get('cycle_id')}`"
+            )
+        if typ=="RANGE_EXIT":
+            return (
+                f"🏁 **LIVE｜Range Alpha 結束**\n"
+                f"BTC｜原因 `{e.get('reason')}`"
+                + (f"｜成交 **{_fmt_p(e.get('price'))}**｜Qty **{e.get('qty')}**" if e.get('price') is not None else "")
+                + f"\n策略內實現盈虧：約 **{_fmt_u(e.get('realized_strategy_pnl'),True)}**\n"
+                f"Cycle `{e.get('cycle_id')}`"
+            )
+        if typ in ("RANGE_ENTRY_BLOCKED","RANGE_TP_ORDER_ERROR"):
+            return (
+                f"⚠️ **LIVE｜Range Alpha {typ}**\n"
+                f"Cycle `{e.get('cycle_id','—')}`｜{e.get('reason') or e.get('detail','')}"
+            )
+        return f"ℹ️ **LIVE Strategy v2.2 + Range Alpha**\n```json\n{json.dumps(e,ensure_ascii=False)[:1700]}\n```"
 
     async def _send_startup(self):
         ch=await self._get_channel()
@@ -266,8 +306,9 @@ class LiveStrategyV2DiscordBridge:
         status=self._last_status or {}
         a=status.get("account",{})
         await ch.send(
-            "🚨 **Strategy v2.2 LIVE 已啟動｜真實 Binance Futures 訂單**\n"
-            "Meta SAFE v1.1｜Trend Score3 + FLEX-AC\n"
+            "🚨 **Strategy v2.2 + Range Alpha LIVE 已啟動｜真實 Binance Futures 訂單**\n"
+            "Meta SAFE v1.1｜Trend Max8 + G65｜FLEX + BTC Range Alpha\n"
+            "Range Alpha：RANGE Quality Gate｜Maker-first｜0.003/0.002 BTC\n"
             "Trend Unit：Profit-Only √ Compounding｜Hard Risk 1%\n"
             f"目前 Equity：**{_fmt_u(a.get('margin_balance'))}**｜"
             f"Portfolio DD：**{float(a.get('portfolio_dd',0))*100:.2f}%**\n"
@@ -289,7 +330,7 @@ class LiveStrategyV2DiscordBridge:
         if ch is not None:
             try:
                 await ch.send(
-                    "🚨 **Strategy v2.2 LIVE 引擎錯誤**\n"
+                    "🚨 **Strategy v2.2 + Range Alpha LIVE 引擎錯誤**\n"
                     f"`{text[:1500]}`\n"
                     "為避免重複/錯誤下單，請優先檢查 Railway Log 與 Binance 真實持倉。"
                 )
@@ -303,9 +344,10 @@ class LiveStrategyV2DiscordBridge:
             await asyncio.to_thread(self.engine.suppress_new_risk_pending)
             self._save_control()
         return (
-            "🛑 **Strategy v2.2 LIVE 已暫停新增風險**\n"
-            "不再 OPEN / ADD；現有 Trend Exit / Structural TP、"
-            "FLEX TP / Recovery Hedge 仍繼續管理。"
+            "🛑 **Strategy v2.2 + Range Alpha LIVE 已暫停新增風險**\n"
+            "不再建立 Trend/FLEX 新風險，且會取消尚未成交的 Range Alpha Entry；"
+            "現有 Trend Exit / Structural TP、FLEX TP / Recovery Hedge、"
+            "已成交 Range Alpha TP/Stop/Time Exit 仍繼續管理。"
         )
 
     async def resume_new_risk(self):
@@ -314,7 +356,7 @@ class LiveStrategyV2DiscordBridge:
             await asyncio.to_thread(self.engine.reconcile_or_halt)
             self.control["new_risk_enabled"]=True
             self._save_control()
-        return "▶️ **Strategy v2.2 LIVE 已恢復新增風險。**"
+        return "▶️ **Strategy v2.2 + Range Alpha LIVE 已恢復新增風險。**"
 
     async def status_text(self):
         status=self._last_status
@@ -322,12 +364,12 @@ class LiveStrategyV2DiscordBridge:
             try:status=json.loads(self.engine.status_file.read_text(encoding="utf-8"))
             except Exception:status=None
         if status is None:
-            return "📡 Strategy v2.2 LIVE 尚未產生第一份 status。"
+            return "📡 Strategy v2.2 + Range Alpha LIVE 尚未產生第一份 status。"
 
         a=status.get("account",{})
         meta=status.get("meta",{})
         lines=[
-            "🚨 **Strategy v2.2 LIVE 狀態**",
+            "🚨 **Strategy v2.2 + Range Alpha LIVE 狀態**",
             f"新增風險：**{'ENABLED' if self.new_risk_enabled else 'PAUSED'}**",
             f"Meta：**{meta.get('state')}**｜Score **{meta.get('score')}/6**",
             f"Equity：**{_fmt_u(a.get('margin_balance'))}**｜"
@@ -423,6 +465,28 @@ class LiveStrategyV2DiscordBridge:
                 f"開倉價 {_fmt_p(fx.get('avg_entry'))}｜盈虧： {_fmt_u(fx.get('pnl'),True)}｜"
                 f"Hedge {float(fx.get('short_qty',0)):.6g} BTC"
             )
+        ra=status.get("range_alpha")
+        rd=status.get("range_alpha_diagnostic",{})
+        q=rd.get("quality",{})
+        if ra is None:
+            lines.append(
+                "BTC Range Alpha：FLAT｜"
+                f"Quality Gate **{'PASS' if q.get('pass') else 'BLOCK'}**｜"
+                f"48h Pos {_fmt_num(q.get('range_pos_48h'),3)}｜"
+                f"ADX {_fmt_num(q.get('adx14'))}"
+            )
+        elif ra.get("state")=="PENDING_ENTRY":
+            lines.append(
+                f"BTC Range Alpha：**PENDING**｜Qty {ra.get('qty')}｜"
+                f"Limit {_fmt_p(ra.get('limit_price'))}｜Cycle `{ra.get('cycle_id')}`"
+            )
+        else:
+            lines.append(
+                f"BTC Range Alpha：**LONG**｜Qty {ra.get('qty')}｜"
+                f"Entry {_fmt_p(ra.get('avg_entry'))}｜PnL {_fmt_u(ra.get('pnl'),True)}｜"
+                f"TP {_fmt_p(ra.get('tp_price'))}｜Stop {_fmt_p(ra.get('stop_price'))}"
+            )
+
         if status.get("halted"):
             lines += ["",f"🚨 HALTED：`{status.get('halt_reason')}`"]
         return "\n".join(lines)
@@ -431,7 +495,7 @@ class LiveStrategyV2DiscordBridge:
         ch=await self._get_channel()
         if ch is None:return "❌ 找不到交易頻道。"
         await ch.send(
-            "🧪 **Strategy v2.2 LIVE Discord 通報測試成功**\n"
+            "🧪 **Strategy v2.2 + Range Alpha LIVE Discord 通報測試成功**\n"
             "這則測試不會送出 Binance 訂單。"
         )
         return "✅ 已送出 LIVE bridge 測試訊息。"
@@ -454,7 +518,7 @@ class LiveStrategyV2DiscordBridge:
             try:
                 msg=await self.status_text()
                 await ch.send(
-                    f"📊 **Strategy v2.2 LIVE 每日摘要｜{today:%Y/%m/%d}**\n\n"
+                    f"📊 **Strategy v2.2 + Range Alpha LIVE 每日摘要｜{today:%Y/%m/%d}**\n\n"
                     +msg
                 )
                 self.control["last_daily_summary_date"]=today.isoformat()

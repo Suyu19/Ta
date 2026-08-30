@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Strategy v2.2 live engine — Max8 + G65
-=========================
+Strategy v2.2 live engine — Max8 + G65 + BTC Range Alpha
+=====================================================
 
-Meta SAFE v1.1 + two child engines on ONE real Binance USDⓈ-M Futures wallet.
+Meta SAFE v1.1 + three virtual sleeves on ONE real Binance USDⓈ-M Futures wallet.
 
 Trend child
 -----------
@@ -15,7 +15,7 @@ Trend child
 - Profit-Only sqrt compounding on NEW Trend trades only:
   Unit = base Unit * sqrt(max(1, current equity / starting equity))
 - Unit is locked for the whole Trade, including all Pyramid Adds
-- Max 7 units
+- Max 8 units
 - Structural TP
 - 1H invalidation / 4H bias flip
 - hard idea risk = 1% of trade-start strategy equity, scaled by locked Meta budget
@@ -33,6 +33,19 @@ FLEX child
 - Recovery dynamic SHORT hedge 15% -> 30% -> 50%
 - no conventional stop loss
 
+Range Alpha child
+-----------------
+- BTCUSDT LONG only
+- New entries only while Meta == RANGE
+- Quality Gate: low directional efficiency + adequate two-way volatility
+- 48h range-low setup + 15m stabilization + 5m taker-buy confirmation
+- Maker-first post-only entry, valid for 1 hour
+- Fixed qty: BTC <100,000 => 0.003 BTC; >=100,000 => 0.002 BTC
+- Maker TP +0.30%, hard stop -1.75%, max hold 8h
+- No averaging/adds
+- Can coexist with FLEX LONG and with Trend after entry
+- Portfolio G65 does NOT scale Range Alpha; the global 50% margin guard still applies
+
 Meta SAFE v1.1
 --------------
 TREND_BULL: Trend 100 / FLEX 0
@@ -47,7 +60,8 @@ DD <15%   x1.00
 
 Important live differences from historical simulator
 -----------------------------------------------------
-- Actual MARKET fills, fees and exchange quantity filters are used.
+- Trend/FLEX use actual MARKET fills; Range Alpha uses actual GTX post-only
+  LIMIT entry/TP plus MARKET stop/time exits. Fees and exchange filters are live.
 - Trend structural TP is acted on when the live poll observes price at/beyond
   the TP level. It cannot retroactively fill an intrabar spike that occurred
   between polls.
@@ -68,6 +82,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import numpy as np
 
 import v5_forward_paper as base
 import v16_dual_forward_paper as v16
@@ -79,10 +94,30 @@ from binance_futures_live import (
 )
 
 
-STRATEGY_VERSION = "2.2-MAX8-G65-META-SAFE-V1.1-PROFIT-SQRT"
+STRATEGY_VERSION = "2.2-MAX8-G65-RANGE-ALPHA-LIVE1"
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
 TREND_REF_UNIT_500 = 140.0
 TREND_MAX_UNITS = 8
+
+# BTC Range Alpha — frozen research specification.
+RANGE_ALPHA_SYMBOL = "BTCUSDT"
+RANGE_ALPHA_PRICE_THRESHOLD = 100_000.0
+RANGE_ALPHA_QTY_BELOW_100K = 0.003
+RANGE_ALPHA_QTY_AT_OR_ABOVE_100K = 0.002
+RANGE_ALPHA_ENTRY_OFFSET = 0.0020       # maker BUY 20 bps below signal close
+RANGE_ALPHA_TP = 0.0030                 # +0.30% maker TP
+RANGE_ALPHA_STOP = 0.0175               # -1.75% hard stop
+RANGE_ALPHA_PENDING_MS = 60 * 60 * 1000
+RANGE_ALPHA_MAX_HOLD_MS = 8 * 60 * 60 * 1000
+RANGE_ALPHA_RANGE_POS_MAX = 0.175
+RANGE_ALPHA_TAKER_BUY_MIN = 0.525
+RANGE_ALPHA_ADX_MAX = 28.0
+RANGE_ALPHA_SEP_ATR_MAX = 1.0
+RANGE_ALPHA_EFF24_MAX = 0.12
+RANGE_ALPHA_RV24_MIN = 0.014
+RANGE_ALPHA_VOLRATIO_12_48_MAX = 1.20
+RANGE_ALPHA_CROSS24_MIN = 12
+RANGE_ALPHA_MIN_RANGE_AGE_H = 4.0
 FLEX_LEVERAGE = 10.0
 FLEX_INITIAL_MARGIN_500 = 12.0
 FLEX_ADD_MARGIN_500 = 8.0
@@ -172,6 +207,49 @@ class FlexCycle:
 
 
 @dataclass
+class RangePendingEntry:
+    cycle_id: str
+    signal_open_time: int
+    signal_close_time: int
+    created_at_ms: int
+    expires_at_ms: int
+    qty: float
+    signal_price: float
+    limit_price: float
+    client_order_id: str
+    order_id: Optional[int] = None
+    meta_state: str = "RANGE"
+    quality: dict = field(default_factory=dict)
+    # A GTX LIMIT can partially fill before our cancellation reaches Binance.
+    # Track that real exchange quantity while the remainder is still pending so
+    # aggregate position reconciliation remains correct across polls/restarts.
+    partial_qty: float = 0.0
+
+
+@dataclass
+class RangeCycle:
+    cycle_id: str
+    opened_at: int
+    initial_qty: float
+    qty: float
+    avg_entry: float
+    entry_fee: float
+    tp_price: float
+    stop_price: float
+    expires_at_ms: int
+    entry_order_id: int
+    entry_client_order_id: str
+    tp_order_id: Optional[int] = None
+    tp_client_order_id: Optional[str] = None
+    tp_trade_ids_accounted: List[int] = field(default_factory=list)
+    tp_filled_qty_accounted: float = 0.0
+    tp_fill_quote_accounted: float = 0.0
+    tp_commission_accounted: float = 0.0
+    fees: float = 0.0
+    realized_pnl: float = 0.0
+
+
+@dataclass
 class V2State:
     strategy_version: str = STRATEGY_VERSION
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
@@ -204,6 +282,11 @@ class V2State:
     flex_pending: Optional[PendingAction] = None
     flex_cooldown_until_ms: int = 0
     flex_last_processed_closed_open_time: Optional[int] = None
+
+    range_pending: Optional[RangePendingEntry] = None
+    range_cycle: Optional[RangeCycle] = None
+    range_last_processed_closed_open_time: Optional[int] = None
+    range_counter: int = 0
 
     order_seq: int = 0
     inflight: Optional[dict] = None
@@ -243,13 +326,23 @@ def _flex_from(d):
     return FlexCycle(**d) if d else None
 
 
+def _range_pending_from(d):
+    return RangePendingEntry(**d) if d else None
+
+
+def _range_cycle_from(d):
+    return RangeCycle(**d) if d else None
+
+
 def state_from_dict(d: dict) -> V2State:
     st = V2State()
     for key in (
         "strategy_version", "created_at_ms", "updated_at_ms",
         "starting_equity", "peak_equity", "capital_scale",
         "trend_lock", "flex_lock", "flex_cooldown_until_ms",
-        "flex_last_processed_closed_open_time", "order_seq", "inflight", "halted", "halt_reason",
+        "flex_last_processed_closed_open_time",
+        "range_last_processed_closed_open_time", "range_counter",
+        "order_seq", "inflight", "halted", "halt_reason",
     ):
         if key in d:
             setattr(st, key, d[key])
@@ -276,6 +369,8 @@ def state_from_dict(d: dict) -> V2State:
     }
     st.flex_cycle = _flex_from(d.get("flex_cycle"))
     st.flex_pending = _pending_from(d.get("flex_pending"))
+    st.range_pending = _range_pending_from(d.get("range_pending"))
+    st.range_cycle = _range_cycle_from(d.get("range_cycle"))
 
     # State schema is backward-compatible; mark the migrated state as the current strategy version.
     st.strategy_version = STRATEGY_VERSION
@@ -414,6 +509,8 @@ def meta_state_from_frames(d1: pd.DataFrame, h4: pd.DataFrame) -> dict:
     exit_count = 0
     candidate_dir = 0
     state = "RANGE"
+    last_emitted_state = None
+    state_since_close_time_ms = None
 
     for _, r in merged.iterrows():
         aligned = int(r["aligned_dir"])
@@ -451,6 +548,10 @@ def meta_state_from_frames(d1: pd.DataFrame, h4: pd.DataFrame) -> dict:
         else:
             state = "RANGE"
 
+        if state != last_emitted_state:
+            last_emitted_state = state
+            state_since_close_time_ms = int(r["close_time"])
+
     last = merged.iloc[-1]
     aligned_ok = int(last["aligned_dir"]) != 0
     adx_ok = bool(last["adx14"] >= 25)
@@ -466,6 +567,7 @@ def meta_state_from_frames(d1: pd.DataFrame, h4: pd.DataFrame) -> dict:
 
     return {
         "state": state,
+        "state_since_ms": state_since_close_time_ms,
         "score": int(last["score"]),
         "aligned_dir": int(last["aligned_dir"]),
         "conditions": {
@@ -641,6 +743,22 @@ class StrategyV2LiveEngine:
             f.write(json.dumps(event, ensure_ascii=False, default=self._json_default) + "\n")
         return event
 
+    def _record_event(self, events, event: dict):
+        e = self._event(event)
+        if events is not None:
+            events.append(e)
+        return e
+
+    def _known_range_client_ids(self) -> set[str]:
+        out: set[str] = set()
+        rp = self.state.range_pending
+        if rp is not None and rp.client_order_id:
+            out.add(rp.client_order_id)
+        rc = self.state.range_cycle
+        if rc is not None and rc.tp_client_order_id:
+            out.add(rc.tp_client_order_id)
+        return out
+
     def _bootstrap(self):
         allow_other = os.getenv(
             "LIVE_ALLOW_OTHER_FUTURES_POSITIONS", "false"
@@ -669,12 +787,19 @@ class StrategyV2LiveEngine:
                 if p.get("symbol") not in SYMBOLS
                 and abs(float(p.get("positionAmt",0))) > 0
             ]
-            if unrelated or orders:
+            known_order_ids = self._known_range_client_ids()
+            unexpected_orders = [
+                o for o in orders
+                if (o.get("clientOrderId") or "") not in known_order_ids
+            ]
+            if unrelated or unexpected_orders:
                 raise BinanceLiveError(
                     "Strategy v2.2 expects a dedicated Futures account. "
-                    "Unrelated positions or open orders were found. "
-                    "Close them first; LIVE_ALLOW_OTHER_FUTURES_POSITIONS=true "
-                    "weakens this protection and is not recommended."
+                    "Unrelated positions or unknown open orders were found. "
+                    "Only persistent Range Alpha orders recorded in strategy state "
+                    "are allowed. Close/reconcile unknown orders first; "
+                    "LIVE_ALLOW_OTHER_FUTURES_POSITIONS=true weakens this protection "
+                    "and is not recommended."
                 )
 
         if self.is_fresh:
@@ -717,6 +842,10 @@ class StrategyV2LiveEngine:
         if self.state.inflight:
             self._recover_inflight()
 
+        # A Range Alpha LIMIT/TP may have filled while Railway was restarting.
+        # Synchronize those persistent orders BEFORE comparing exchange position
+        # quantities to the virtual sleeves.
+        self._sync_range_orders(events=None, bootstrap=True)
         self.reconcile_or_halt()
 
     def _recover_inflight(self):
@@ -775,6 +904,12 @@ class StrategyV2LiveEngine:
         if fc is not None:
             out[("BTCUSDT","LONG")] += fc.long_qty
             out[("BTCUSDT","SHORT")] += fc.short_qty
+        rc = self.state.range_cycle
+        if rc is not None:
+            out[("BTCUSDT","LONG")] += rc.qty
+        rp = self.state.range_pending
+        if rp is not None and float(getattr(rp, "partial_qty", 0.0) or 0.0) > 0:
+            out[("BTCUSDT","LONG")] += float(rp.partial_qty)
         return out
 
     def reconcile_or_halt(self):
@@ -944,6 +1079,7 @@ class StrategyV2LiveEngine:
         short = {
             "trend_open":"to","trend_add":"ta","trend_reduce":"tr","trend_exit":"tx",
             "flex_open":"fo","flex_add":"fa","flex_close":"fc","flex_hedge":"fh",
+            "range_entry":"re","range_tp":"rt","range_exit":"rx",
         }.get(kind,"x")
         # <= 36 chars, valid Binance charset
         return f"s2-{self.state.order_seq:08d}-{short}-{uuid.uuid4().hex[:8]}"
@@ -1106,6 +1242,19 @@ class StrategyV2LiveEngine:
                 fc.fees+=fee
                 if fc.short_qty <= self.client.symbol_filter("BTCUSDT").qty_step/2:
                     fc.short_qty=0;fc.short_avg=0
+
+        elif kind=="range_exit":
+            rc=self.state.range_cycle
+            if rc is None:
+                raise BinanceLiveError("Range Alpha exit fill has no active cycle.")
+            q=min(qty,rc.qty)
+            rc.realized_pnl += q*(px-rc.avg_entry)
+            rc.fees += fee
+            rc.qty -= q
+            step=self.client.symbol_filter(RANGE_ALPHA_SYMBOL).qty_step
+            if rc.qty <= step/2:
+                rc.qty=0.0
+                self.state.range_cycle=None
 
     # --------------------------------------------------------
     # Trend order helpers
@@ -1465,6 +1614,678 @@ class StrategyV2LiveEngine:
         }))
 
     # --------------------------------------------------------
+    # BTC Range Alpha — Quality-Gated maker mean reversion
+    # --------------------------------------------------------
+
+    def _range_quality_features(self, market) -> dict:
+        btc = market.get("btc15")
+        meta = market.get("meta", {})
+        out = {
+            "available": False,
+            "pass": False,
+            "meta_range": meta.get("state") == "RANGE",
+        }
+        if btc is None or len(btc) < 220:
+            out["reason"] = "insufficient_15m_history"
+            return out
+
+        x = btc.copy().reset_index(drop=True)
+        c = pd.to_numeric(x["close"], errors="coerce")
+        h = pd.to_numeric(x["high"], errors="coerce")
+        l = pd.to_numeric(x["low"], errors="coerce")
+        if c.tail(220).isna().any():
+            out["reason"] = "nan_15m_history"
+            return out
+
+        lr = np.log(c / c.shift(1))
+        rv12 = float(lr.rolling(48).std().iloc[-1] * math.sqrt(96))
+        rv24 = float(lr.rolling(96).std().iloc[-1] * math.sqrt(96))
+        rv48 = float(lr.rolling(192).std().iloc[-1] * math.sqrt(96))
+        volratio = rv12 / rv48 if rv48 > 0 else math.inf
+
+        path24 = float(c.diff().abs().iloc[-96:].sum())
+        eff24 = (
+            abs(float(c.iloc[-1]) - float(c.iloc[-97])) / path24
+            if path24 > 0 else 0.0
+        )
+
+        ema20 = c.ewm(span=20, adjust=False).mean()
+        above = (c > ema20).astype(int)
+        crosses = (above != above.shift(1)).astype(float)
+        cross24 = float(crosses.iloc[-96:].sum())
+
+        hi48 = float(h.iloc[-192:].max())
+        lo48 = float(l.iloc[-192:].min())
+        pos48 = (
+            (float(c.iloc[-1]) - lo48) / (hi48 - lo48)
+            if hi48 > lo48 else 0.5
+        )
+
+        adx = float(meta.get("h4", {}).get("adx14") or math.nan)
+        sep = float(
+            meta.get("conditions", {})
+            .get("ema_separation_ge_075_atr", {})
+            .get("value")
+            or math.nan
+        )
+        since = meta.get("state_since_ms")
+        age_h = (
+            max(0.0, (float(market["now_ms"]) - float(since)) / 3_600_000.0)
+            if since is not None and meta.get("state") == "RANGE" else 0.0
+        )
+
+        checks = {
+            "meta_range": meta.get("state") == "RANGE",
+            "range_age_ge_4h": age_h >= RANGE_ALPHA_MIN_RANGE_AGE_H,
+            "adx_le_28": not math.isnan(adx) and adx <= RANGE_ALPHA_ADX_MAX,
+            "sep_atr_le_1": not math.isnan(sep) and sep <= RANGE_ALPHA_SEP_ATR_MAX,
+            "eff24_le_012": eff24 <= RANGE_ALPHA_EFF24_MAX,
+            "rv24_ge_014": not math.isnan(rv24) and rv24 >= RANGE_ALPHA_RV24_MIN,
+            "volratio_le_120": not math.isnan(volratio) and volratio <= RANGE_ALPHA_VOLRATIO_12_48_MAX,
+            "cross24_ge_12": cross24 >= RANGE_ALPHA_CROSS24_MIN,
+        }
+        out.update({
+            "available": True,
+            "pass": all(checks.values()),
+            "checks": checks,
+            "range_age_h": age_h,
+            "adx14": adx,
+            "sep_atr": sep,
+            "eff24": eff24,
+            "rv12": rv12,
+            "rv24": rv24,
+            "rv48": rv48,
+            "volratio_12_48": volratio,
+            "ema20_crosses_24h": cross24,
+            "range_pos_48h": pos48,
+            "range_low_48h": lo48,
+            "range_high_48h": hi48,
+        })
+        return out
+
+    def _range_micro_context(self, signal_open_time: int, now_ms: int) -> dict:
+        raw = self.client.public_get(
+            "/fapi/v1/klines",
+            {"symbol": RANGE_ALPHA_SYMBOL, "interval": "5m", "limit": 30},
+        )
+        cols = [
+            "open_time","open","high","low","close","volume","close_time",
+            "quote_volume","trades","taker_buy_base","taker_buy_quote","ignore",
+        ]
+        d = pd.DataFrame(raw, columns=cols)
+        if d.empty:
+            return {"available": False, "pass": False, "reason": "no_5m_data"}
+        for col in ("open_time","close_time"):
+            d[col] = pd.to_numeric(d[col], errors="coerce").astype("int64")
+        for col in ("volume","taker_buy_base"):
+            d[col] = pd.to_numeric(d[col], errors="coerce")
+        d = d[d["close_time"] <= int(now_ms)].copy().reset_index(drop=True)
+
+        cur = d[(d.open_time >= signal_open_time) & (d.open_time < signal_open_time + 900_000)]
+        prev = d[(d.open_time >= signal_open_time - 900_000) & (d.open_time < signal_open_time)]
+        if len(cur) < 3 or len(prev) < 3:
+            return {"available": False, "pass": False, "reason": "incomplete_5m_buckets"}
+        cur = cur.tail(3)
+        prev = prev.tail(3)
+        cur_vol = float(cur.volume.sum())
+        prev_vol = float(prev.volume.sum())
+        last_vol = float(cur.iloc[-1].volume)
+        if min(cur_vol, prev_vol, last_vol) <= 0:
+            return {"available": False, "pass": False, "reason": "zero_volume"}
+
+        buy15 = float(cur.taker_buy_base.sum()) / cur_vol
+        prev_buy15 = float(prev.taker_buy_base.sum()) / prev_vol
+        last5 = float(cur.iloc[-1].taker_buy_base) / last_vol
+        passed = (
+            last5 >= RANGE_ALPHA_TAKER_BUY_MIN
+            and buy15 >= prev_buy15
+        )
+        return {
+            "available": True,
+            "pass": passed,
+            "last5_buy_ratio": last5,
+            "buy_ratio_15m": buy15,
+            "prev_buy_ratio_15m": prev_buy15,
+            "last5_buy_ge_0525": last5 >= RANGE_ALPHA_TAKER_BUY_MIN,
+            "buy_pressure_non_declining": buy15 >= prev_buy15,
+        }
+
+    def _range_entry_diagnostic(self, market, *, include_micro: bool = False) -> dict:
+        q = self._range_quality_features(market)
+        btc = market.get("btc15")
+        if btc is None or len(btc) < 2:
+            return {"available": False, "eligible_now": False, "quality": q}
+        row = btc.iloc[-1]
+        prev = btc.iloc[-2]
+        signal_open = int(row["open_time"])
+        signal_close = int(row["close_time"])
+        signal_price = float(row["close"])
+        edge_ok = bool(q.get("available") and q.get("range_pos_48h", 1.0) <= RANGE_ALPHA_RANGE_POS_MAX)
+        stabilize = signal_price > float(prev["close"])
+        micro = None
+        if include_micro and q.get("pass") and edge_ok and stabilize:
+            micro = self._range_micro_context(signal_open, int(market["now_ms"]))
+        micro_ok = bool(micro and micro.get("pass")) if include_micro else None
+        # Research entries occurred when Trend was not already running. Once a
+        # Range Alpha order/cycle exists, a later Trend is explicitly allowed
+        # to coexist; this gate applies only to creating a fresh Range order.
+        trend_clear_for_new_entry = (
+            not any(self.state.trend_active.values())
+            and not any(p is not None for p in self.state.trend_pending.values())
+        )
+        eligible = bool(
+            q.get("pass") and edge_ok and stabilize
+            and (micro_ok if include_micro else True)
+            and trend_clear_for_new_entry
+            and self.state.range_pending is None
+            and self.state.range_cycle is None
+        )
+        return {
+            "available": True,
+            "eligible_now": eligible,
+            "signal_open_time": signal_open,
+            "signal_close_time": signal_close,
+            "signal_price": signal_price,
+            "quality": q,
+            "edge_ok": edge_ok,
+            "stabilize": stabilize,
+            "micro": micro,
+            "trend_clear_for_new_entry": trend_clear_for_new_entry,
+        }
+
+    def _range_qty_for_market_price(self, market_price: float) -> float:
+        raw = (
+            RANGE_ALPHA_QTY_BELOW_100K
+            if float(market_price) < RANGE_ALPHA_PRICE_THRESHOLD
+            else RANGE_ALPHA_QTY_AT_OR_ABOVE_100K
+        )
+        return self.client.round_limit_qty(RANGE_ALPHA_SYMBOL, raw)
+
+    def _place_range_entry(self, market, diagnostic, events):
+        if self.state.range_pending is not None or self.state.range_cycle is not None:
+            return
+        if market["meta"].get("state") != "RANGE":
+            return
+        if any(self.state.trend_active.values()) or any(
+            p is not None for p in self.state.trend_pending.values()
+        ):
+            return
+        live_price = float(market["prices"][RANGE_ALPHA_SYMBOL])
+        qty = self._range_qty_for_market_price(live_price)
+        if qty <= 0:
+            self._record_event(events, {
+                "type": "RANGE_ENTRY_BLOCKED", "symbol": RANGE_ALPHA_SYMBOL,
+                "reason": "QTY_BELOW_EXCHANGE_MINIMUM", "market_price": live_price,
+            })
+            return
+        signal_price = float(diagnostic["signal_price"])
+        limit_price = self.client.round_price(
+            RANGE_ALPHA_SYMBOL,
+            signal_price * (1.0 - RANGE_ALPHA_ENTRY_OFFSET),
+            side="BUY",
+        )
+        f = self.client.symbol_filter(RANGE_ALPHA_SYMBOL)
+        if qty * limit_price < f.min_notional:
+            self._record_event(events, {
+                "type": "RANGE_ENTRY_BLOCKED", "symbol": RANGE_ALPHA_SYMBOL,
+                "reason": "MIN_NOTIONAL", "qty": qty, "limit_price": limit_price,
+                "min_notional": f.min_notional,
+            })
+            return
+
+        self.state.range_counter += 1
+        cycle_id = f"BTC-RA-{self.state.range_counter:05d}"
+        cid = self._new_client_id("range_entry")
+        now = self.client.timestamp_ms()
+        rp = RangePendingEntry(
+            cycle_id=cycle_id,
+            signal_open_time=int(diagnostic["signal_open_time"]),
+            signal_close_time=int(diagnostic["signal_close_time"]),
+            created_at_ms=now,
+            expires_at_ms=now + RANGE_ALPHA_PENDING_MS,
+            qty=qty,
+            signal_price=signal_price,
+            limit_price=limit_price,
+            client_order_id=cid,
+            meta_state="RANGE",
+            quality=dict(diagnostic.get("quality") or {}),
+        )
+        self.state.range_pending = rp
+        self.save()
+        try:
+            raw = self.client.limit_order(
+                symbol=RANGE_ALPHA_SYMBOL,
+                side="BUY",
+                position_side="LONG",
+                qty=qty,
+                price=limit_price,
+                client_order_id=cid,
+                reducing=False,
+                post_only=True,
+            )
+        except BinanceLiveError as exc:
+            # A GTX order can be rejected if it would immediately cross.  That
+            # means no maker entry exists; safely abandon this signal.
+            if "code=-5022" in str(exc) or "Post Only" in str(exc):
+                self.state.range_pending = None
+                self.save()
+                self._record_event(events, {
+                    "type": "RANGE_ENTRY_CANCEL", "symbol": RANGE_ALPHA_SYMBOL,
+                    "cycle_id": cycle_id, "reason": "POST_ONLY_REJECTED",
+                    "detail": str(exc)[:500],
+                })
+                return
+            # Ambiguous network failures keep the persistent client id so a
+            # restart can query exactly this order rather than duplicating it.
+            raise
+        rp.order_id = int(raw.get("orderId", 0) or 0) or None
+        self.save()
+        self._record_event(events, {
+            "type": "RANGE_ENTRY_PENDING", "symbol": RANGE_ALPHA_SYMBOL,
+            "cycle_id": cycle_id, "qty": qty, "limit_price": limit_price,
+            "signal_price": signal_price, "expires_at_ms": rp.expires_at_ms,
+            "order_id": rp.order_id, "client_order_id": cid,
+        })
+        # Normally GTX remains NEW, but synchronize if it filled exceptionally fast.
+        self._sync_range_orders(events=events, bootstrap=False)
+
+    def _activate_range_entry(self, pending: RangePendingEntry, raw: dict, events):
+        fill = self.client._normalize_fill(
+            raw, RANGE_ALPHA_SYMBOL, "BUY", "LONG", pending.qty, pending.client_order_id
+        )
+        if fill.executed_qty <= 0:
+            return False
+        trades = self.client.user_trades_for_order(RANGE_ALPHA_SYMBOL, fill.order_id) if fill.order_id else []
+        opened_at = min(
+            [int(x.get("time", self.client.timestamp_ms())) for x in trades]
+            or [self.client.timestamp_ms()]
+        )
+        entry = float(fill.avg_price)
+        qty = self.client.round_limit_qty(RANGE_ALPHA_SYMBOL, fill.executed_qty)
+        if qty <= 0:
+            raise BinanceReconciliationError(
+                f"Range Alpha fill {fill.client_order_id} is below usable qty after rounding."
+            )
+        tp = self.client.round_price(
+            RANGE_ALPHA_SYMBOL, entry * (1.0 + RANGE_ALPHA_TP), side="SELL"
+        )
+        stop = entry * (1.0 - RANGE_ALPHA_STOP)
+        rc = RangeCycle(
+            cycle_id=pending.cycle_id,
+            opened_at=opened_at,
+            initial_qty=qty,
+            qty=qty,
+            avg_entry=entry,
+            entry_fee=float(fill.commission),
+            tp_price=tp,
+            stop_price=stop,
+            expires_at_ms=opened_at + RANGE_ALPHA_MAX_HOLD_MS,
+            entry_order_id=fill.order_id,
+            entry_client_order_id=fill.client_order_id,
+            fees=float(fill.commission),
+        )
+        self.state.range_pending = None
+        self.state.range_cycle = rc
+        self.save()
+        self._record_event(events, {
+            "type": "RANGE_OPEN", "symbol": RANGE_ALPHA_SYMBOL,
+            "direction": "LONG", "cycle_id": rc.cycle_id,
+            "qty": qty, "price": entry,
+            "notional": fill.quote_qty or qty * entry,
+            "tp_price": tp, "stop_price": stop,
+            "max_hold_hours": RANGE_ALPHA_MAX_HOLD_MS / 3_600_000,
+            "order_id": fill.order_id, "client_order_id": fill.client_order_id,
+        })
+        self._ensure_range_tp(events)
+        return True
+
+    def _update_range_pending_partial(self, rp: RangePendingEntry, raw: dict) -> float:
+        executed = abs(float((raw or {}).get("executedQty", 0.0) or 0.0))
+        qty = self.client.round_limit_qty(RANGE_ALPHA_SYMBOL, executed) if executed > 0 else 0.0
+        if abs(float(getattr(rp, "partial_qty", 0.0) or 0.0) - qty) > 1e-12:
+            rp.partial_qty = qty
+            self.save()
+        return qty
+
+    def _cancel_range_pending(self, reason: str, events=None):
+        rp = self.state.range_pending
+        if rp is None:
+            return
+
+        # A partial GTX fill creates a real BTC LONG immediately.  We only
+        # convert it into an active RangeCycle after Binance confirms that the
+        # remainder can no longer fill (CANCELED/EXPIRED/REJECTED/FILLED).
+        # Until then partial_qty is included in expected_positions().
+        cancel_raw = None
+        try:
+            cancel_raw = self.client.cancel_order(
+                RANGE_ALPHA_SYMBOL,
+                order_id=rp.order_id,
+                client_order_id=None if rp.order_id is not None else rp.client_order_id,
+            )
+        except Exception:
+            cancel_raw = None
+
+        final_raw = None
+        try:
+            final_raw = self.client.query_order(
+                RANGE_ALPHA_SYMBOL, client_order_id=rp.client_order_id
+            )
+        except Exception:
+            final_raw = cancel_raw
+
+        if not final_raw:
+            raise BinanceReconciliationError(
+                f"Cannot confirm final state of Range entry order {rp.client_order_id}; "
+                "keeping it pending and retrying next poll."
+            )
+
+        status = str(final_raw.get("status", "")).upper()
+        executed = self._update_range_pending_partial(rp, final_raw)
+        terminal = status in {"CANCELED", "EXPIRED", "REJECTED", "FILLED"}
+        if not terminal:
+            raise BinanceLiveError(
+                f"Range entry cancel not yet terminal: {rp.client_order_id} "
+                f"status={status or 'UNKNOWN'} executedQty={executed:.12g}"
+            )
+
+        if executed > 0:
+            # Cancellation raced a partial/full fill.  The actual filled clip
+            # becomes a normal Range Cycle and is NOT discarded merely because
+            # Meta changed or the pending timeout elapsed.
+            self._activate_range_entry(rp, final_raw, events)
+            self._record_event(events, {
+                "type": "RANGE_ENTRY_PARTIAL_ACCEPTED", "symbol": RANGE_ALPHA_SYMBOL,
+                "cycle_id": rp.cycle_id, "reason": reason, "executed_qty": executed,
+                "final_order_status": status,
+            })
+            return
+
+        self.state.range_pending = None
+        self.save()
+        self._record_event(events, {
+            "type": "RANGE_ENTRY_CANCEL", "symbol": RANGE_ALPHA_SYMBOL,
+            "cycle_id": rp.cycle_id, "reason": reason,
+            "order_id": rp.order_id, "client_order_id": rp.client_order_id,
+            "final_order_status": status,
+        })
+
+    def _try_cancel_range_pending(self, reason: str, events=None) -> bool:
+        try:
+            self._cancel_range_pending(reason, events)
+            return True
+        except Exception as exc:
+            # Do not stop management of already-open Trend/FLEX/Range positions
+            # just because a LIMIT cancellation request had a transient failure.
+            # Keep the persistent pending id and retry next poll.
+            self._record_event(events, {
+                "type": "RANGE_ENTRY_CANCEL_ERROR",
+                "symbol": RANGE_ALPHA_SYMBOL,
+                "cycle_id": (self.state.range_pending.cycle_id if self.state.range_pending else None),
+                "reason": reason, "detail": str(exc)[:700],
+            })
+            return False
+
+    def _ensure_range_tp(self, events=None):
+        rc = self.state.range_cycle
+        if rc is None or rc.qty <= 0 or rc.tp_client_order_id:
+            return
+        # If price has already crossed the TP before the resting maker order is
+        # installed, do not chase a GTX rejection indefinitely: realize it by MARKET.
+        live_price = self.client.ticker_price(RANGE_ALPHA_SYMBOL)
+        if live_price >= rc.tp_price:
+            self._close_range_market("TP_MARKET_FALLBACK", live_price, events)
+            return
+        cid = self._new_client_id("range_tp")
+        rc.tp_client_order_id = cid
+        self.save()
+        try:
+            raw = self.client.limit_order(
+                symbol=RANGE_ALPHA_SYMBOL,
+                side="SELL",
+                position_side="LONG",
+                qty=rc.qty,
+                price=rc.tp_price,
+                client_order_id=cid,
+                reducing=True,
+                post_only=True,
+            )
+        except BinanceLiveError as exc:
+            rc.tp_client_order_id = None
+            rc.tp_order_id = None
+            self.save()
+            live_price = self.client.ticker_price(RANGE_ALPHA_SYMBOL)
+            if ("code=-5022" in str(exc) or "Post Only" in str(exc)) and live_price >= rc.tp_price:
+                self._close_range_market("TP_MARKET_FALLBACK", live_price, events)
+                return
+            self._record_event(events, {
+                "type": "RANGE_TP_ORDER_ERROR", "symbol": RANGE_ALPHA_SYMBOL,
+                "cycle_id": rc.cycle_id, "detail": str(exc)[:700],
+            })
+            return
+        rc.tp_order_id = int(raw.get("orderId", 0) or 0) or None
+        self.save()
+        self._record_event(events, {
+            "type": "RANGE_TP_PLACED", "symbol": RANGE_ALPHA_SYMBOL,
+            "cycle_id": rc.cycle_id, "qty": rc.qty, "tp_price": rc.tp_price,
+            "order_id": rc.tp_order_id, "client_order_id": cid,
+        })
+
+    def _apply_range_tp_totals(
+        self,
+        rc: RangeCycle,
+        *,
+        total_qty: float,
+        total_quote: float,
+        total_commission: float,
+        events=None,
+        source: str = "userTrades",
+    ) -> float:
+        dq = max(0.0, float(total_qty) - float(rc.tp_filled_qty_accounted))
+        dquote = float(total_quote) - float(rc.tp_fill_quote_accounted)
+        dcomm = float(total_commission) - float(rc.tp_commission_accounted)
+        # dquote - dq*entry includes both the PnL on newly-accounted quantity
+        # and any later correction to a prior fallback price estimate.
+        rc.realized_pnl += dquote - dq * rc.avg_entry
+        rc.fees += dcomm
+        rc.qty = max(0.0, rc.qty - dq)
+        rc.tp_filled_qty_accounted = float(total_qty)
+        rc.tp_fill_quote_accounted = float(total_quote)
+        rc.tp_commission_accounted = float(total_commission)
+        if dq > 0 or abs(dquote) > 1e-10 or abs(dcomm) > 1e-10:
+            self.save()
+        if dq > 0:
+            self._record_event(events, {
+                "type": "RANGE_TP_FILL", "symbol": RANGE_ALPHA_SYMBOL,
+                "cycle_id": rc.cycle_id, "qty": dq,
+                "price": dquote / dq if dq > 0 else rc.tp_price,
+                "remaining_qty": max(0.0, rc.qty), "source": source,
+            })
+        return dq
+
+    def _account_range_tp_trades(self, rc: RangeCycle, events=None) -> float:
+        if not rc.tp_order_id:
+            return 0.0
+        try:
+            trades = self.client.user_trades_for_order(RANGE_ALPHA_SYMBOL, rc.tp_order_id)
+        except Exception:
+            trades = []
+        if not trades:
+            return 0.0
+        total_qty = sum(abs(float(x.get("qty", 0.0) or 0.0)) for x in trades)
+        total_quote = sum(
+            abs(float(x.get("qty", 0.0) or 0.0)) * float(x.get("price", 0.0) or 0.0)
+            for x in trades
+        )
+        total_commission = sum(float(x.get("commission", 0.0) or 0.0) for x in trades)
+        rc.tp_trade_ids_accounted = [int(x.get("id", -1)) for x in trades]
+        return self._apply_range_tp_totals(
+            rc,
+            total_qty=total_qty,
+            total_quote=total_quote,
+            total_commission=total_commission,
+            events=events,
+            source="userTrades",
+        )
+
+    def _sync_range_tp_order(self, events=None, *, rearm: bool = True, raw_override=None):
+        rc = self.state.range_cycle
+        if rc is None or not rc.tp_client_order_id:
+            return
+        raw = raw_override
+        if raw is None:
+            try:
+                raw = self.client.query_order(
+                    RANGE_ALPHA_SYMBOL, client_order_id=rc.tp_client_order_id
+                )
+            except Exception:
+                # Leave the known order in state. A later poll/restart can query it;
+                # blindly clearing it risks double-closing FLEX/Range aggregate LONG.
+                return
+
+        self._account_range_tp_trades(rc, events)
+        # Binance order status can arrive before userTrades. Preserve quantity
+        # reconciliation by conservatively accounting any missing executedQty at
+        # the actual LIMIT price and estimated maker fee; later userTrades totals
+        # can correct quote/commission without double-counting quantity.
+        executed = abs(float(raw.get("executedQty", 0.0) or 0.0))
+        if executed > rc.tp_filled_qty_accounted + 1e-12:
+            px = float(raw.get("avgPrice", 0.0) or 0.0) or rc.tp_price
+            total_quote = rc.tp_fill_quote_accounted + (
+                executed - rc.tp_filled_qty_accounted
+            ) * px
+            total_comm = rc.tp_commission_accounted + (
+                executed - rc.tp_filled_qty_accounted
+            ) * px * 0.0002
+            self._apply_range_tp_totals(
+                rc,
+                total_qty=executed,
+                total_quote=total_quote,
+                total_commission=total_comm,
+                events=events,
+                source="order_status_fallback",
+            )
+
+        step = self.client.symbol_filter(RANGE_ALPHA_SYMBOL).qty_step
+        if rc.qty <= step / 2:
+            net = rc.realized_pnl - rc.fees
+            cid = rc.cycle_id
+            self.state.range_cycle = None
+            self.save()
+            self._record_event(events, {
+                "type": "RANGE_EXIT", "symbol": RANGE_ALPHA_SYMBOL,
+                "cycle_id": cid, "reason": "TP_LIMIT",
+                "realized_strategy_pnl": net,
+            })
+            return
+        status = str(raw.get("status", "")).upper()
+        if status in {"CANCELED", "EXPIRED", "REJECTED"}:
+            rc.tp_order_id = None
+            rc.tp_client_order_id = None
+            self.save()
+            if rearm:
+                self._ensure_range_tp(events)
+
+    def _sync_range_orders(self, events=None, *, bootstrap: bool = False):
+        rp = self.state.range_pending
+        if rp is not None:
+            try:
+                raw = self.client.query_order(
+                    RANGE_ALPHA_SYMBOL, client_order_id=rp.client_order_id
+                )
+            except Exception:
+                raw = None
+            if raw is not None:
+                status = str(raw.get("status", "")).upper()
+                executed = float(raw.get("executedQty", 0.0) or 0.0)
+                if status == "PARTIALLY_FILLED":
+                    # Record the real partial exchange position first so
+                    # reconciliation remains correct even if cancellation is
+                    # temporarily unavailable. Then try to cancel the remainder.
+                    self._update_range_pending_partial(rp, raw)
+                    self._try_cancel_range_pending("PARTIAL_FILL_ACCEPTED", events)
+                elif status == "FILLED":
+                    self._update_range_pending_partial(rp, raw)
+                    self._activate_range_entry(rp, raw, events)
+                elif status in {"CANCELED", "EXPIRED", "REJECTED"}:
+                    self._update_range_pending_partial(rp, raw)
+                    if executed > 0:
+                        self._activate_range_entry(rp, raw, events)
+                    else:
+                        self.state.range_pending = None
+                        self.save()
+                        self._record_event(events, {
+                            "type": "RANGE_ENTRY_CANCEL", "symbol": RANGE_ALPHA_SYMBOL,
+                            "cycle_id": rp.cycle_id, "reason": status,
+                            "order_id": rp.order_id,
+                            "client_order_id": rp.client_order_id,
+                        })
+
+        if self.state.range_cycle is not None:
+            self._sync_range_tp_order(events, rearm=True)
+            if self.state.range_cycle is not None:
+                self._ensure_range_tp(events)
+
+    def _cancel_range_tp(self, events=None):
+        rc = self.state.range_cycle
+        if rc is None or not rc.tp_client_order_id:
+            return
+        cid = rc.tp_client_order_id
+        oid = rc.tp_order_id
+        cancel_raw = None
+        try:
+            cancel_raw = self.client.cancel_order(
+                RANGE_ALPHA_SYMBOL,
+                order_id=oid,
+                client_order_id=None if oid is not None else cid,
+            )
+        except Exception:
+            cancel_raw = None
+        final_raw = None
+        try:
+            final_raw = self.client.query_order(
+                RANGE_ALPHA_SYMBOL, client_order_id=cid
+            )
+        except Exception:
+            final_raw = cancel_raw
+        if not final_raw:
+            raise BinanceReconciliationError(
+                f"Cannot confirm final state of Range TP order {cid}; "
+                "refusing MARKET exit to avoid closing FLEX/Trend quantity by mistake."
+            )
+        self._sync_range_tp_order(events, rearm=False, raw_override=final_raw)
+        rc = self.state.range_cycle
+        if rc is not None and rc.tp_client_order_id == cid:
+            rc.tp_client_order_id = None
+            rc.tp_order_id = None
+            self.save()
+
+    def _close_range_market(self, reason: str, reference_price: float, events=None):
+        rc = self.state.range_cycle
+        if rc is None:
+            return
+        cycle_id = rc.cycle_id
+        self._cancel_range_tp(events)
+        rc = self.state.range_cycle
+        if rc is None or rc.qty <= 0:
+            return
+        requested = rc.qty
+        fill = self._submit({
+            "kind": "range_exit", "symbol": RANGE_ALPHA_SYMBOL,
+            "side": "SELL", "position_side": "LONG",
+            "qty": requested, "reducing": True,
+            "reference_price": float(reference_price),
+        })
+        net = rc.realized_pnl - rc.fees
+        self._record_event(events, {
+            "type": "RANGE_EXIT", "symbol": RANGE_ALPHA_SYMBOL,
+            "cycle_id": cycle_id, "reason": reason,
+            "qty": fill.executed_qty, "price": fill.avg_price,
+            "realized_strategy_pnl": net,
+            "order_id": fill.order_id, "client_order_id": fill.client_order_id,
+        })
+
+    # --------------------------------------------------------
     # Main cycle
     # --------------------------------------------------------
 
@@ -1480,6 +2301,8 @@ class StrategyV2LiveEngine:
                 self.state.trend_pending[s]=None
         if self.state.flex_pending and self.state.flex_pending.kind in ("OPEN","ADD"):
             self.state.flex_pending=None
+        if self.state.range_pending is not None:
+            self._try_cancel_range_pending("NEW_RISK_PAUSED", events=None)
         self.save()
 
     def cycle(self, *, new_risk_enabled: bool = True) -> dict:
@@ -1496,10 +2319,37 @@ class StrategyV2LiveEngine:
                     f"Strategy v2.2 is HALTED: {self.state.halt_reason}"
                 )
 
+        events=[]
+        # Persistent maker orders may fill between 20-second polls.  Account
+        # their fills before the aggregate exchange-position reconciliation.
+        self._sync_range_orders(events=events, bootstrap=False)
         self.reconcile_or_halt()
         market=self._market_context()
         account=self._account_snapshot()
-        events=[]
+
+        # Pending Range Alpha is NEW risk.  It is cancelled when disabled,
+        # expired, or Meta has left RANGE.  An already-filled Range Cycle is
+        # deliberately allowed to finish even if Meta later becomes TRANS/TREND.
+        rp=self.state.range_pending
+        if rp is not None:
+            if not new_risk_enabled:
+                self._try_cancel_range_pending("NEW_RISK_PAUSED", events)
+            elif market["meta"].get("state") != "RANGE":
+                self._try_cancel_range_pending("META_LEFT_RANGE", events)
+            elif self.client.timestamp_ms() >= rp.expires_at_ms:
+                self._try_cancel_range_pending("ENTRY_TIMEOUT_1H", events)
+
+        # Range Alpha TP rests at Binance. Hard stop/time exit are managed by
+        # the live poll and close only this virtual sleeve's quantity.
+        rc=self.state.range_cycle
+        if rc is not None:
+            price=float(market["prices"][RANGE_ALPHA_SYMBOL])
+            if price <= rc.stop_price:
+                self._close_range_market("HARD_STOP_1P75", price, events)
+            elif self.client.timestamp_ms() >= rc.expires_at_ms:
+                self._close_range_market("TIME_EXIT_8H", price, events)
+            elif self.state.range_cycle is not None:
+                self._ensure_range_tp(events)
 
         # ------------------
         # execute queued trend at live market
@@ -1734,8 +2584,41 @@ class StrategyV2LiveEngine:
                 if (fc.entry_actions<8 or fc.tp_stage>0) and self._flex_add_confirm(market,threshold):
                     self.state.flex_pending=PendingAction(kind="ADD",symbol="BTCUSDT")
 
+        # Range Alpha evaluates exactly one newly closed BTC 15m bar.
+        # Unlike FLEX it places its maker entry immediately after that close.
+        btc15=market["btc15"]
+        if btc15 is not None and len(btc15)>=2:
+            ra_open=int(btc15.iloc[-1]["open_time"])
+            ra_last=self.state.range_last_processed_closed_open_time
+            if ra_last is None or ra_open>ra_last:
+                if self.state.range_cycle is not None or self.state.range_pending is not None:
+                    self.state.range_last_processed_closed_open_time=ra_open
+                elif not new_risk_enabled or market["meta"].get("state")!="RANGE":
+                    self.state.range_last_processed_closed_open_time=ra_open
+                else:
+                    diag=self._range_entry_diagnostic(market,include_micro=True)
+                    micro=diag.get("micro")
+                    # If the only missing item is freshly-closed 5m data, retry
+                    # this same 15m signal on the next 20-second poll instead of
+                    # permanently discarding it because of Binance data latency.
+                    retry_micro=bool(
+                        diag.get("quality",{}).get("pass")
+                        and diag.get("edge_ok")
+                        and diag.get("stabilize")
+                        and micro is not None
+                        and not micro.get("available",False)
+                    )
+                    if not retry_micro:
+                        self.state.range_last_processed_closed_open_time=ra_open
+                        if diag.get("eligible_now"):
+                            self._place_range_entry(market,diag,events)
+
         if not new_risk_enabled:
             self.suppress_new_risk_pending()
+
+        # A maker fill can occur while the rest of this cycle is being processed.
+        # Synchronize once more before final position reconciliation.
+        self._sync_range_orders(events=events, bootstrap=False)
 
         # Final real-account snapshot and reconciliation after fills.
         account=self._account_snapshot()
@@ -1883,6 +2766,44 @@ class StrategyV2LiveEngine:
                 "tp_stage":fc.tp_stage,
                 "risk_mult":fc.meta_risk_mult,
             }
+
+        rc=self.state.range_cycle
+        rp=self.state.range_pending
+        range_alpha=None
+        if rc is not None:
+            p=float(market["prices"][RANGE_ALPHA_SYMBOL])
+            range_alpha={
+                "state":"ACTIVE",
+                "cycle_id":rc.cycle_id,
+                "qty":rc.qty,
+                "initial_qty":rc.initial_qty,
+                "avg_entry":rc.avg_entry,
+                "pnl":rc.realized_pnl + rc.qty*(p-rc.avg_entry) - rc.fees,
+                "tp_price":rc.tp_price,
+                "stop_price":rc.stop_price,
+                "expires_at_ms":rc.expires_at_ms,
+                "tp_order_id":rc.tp_order_id,
+                "tp_client_order_id":rc.tp_client_order_id,
+            }
+        elif rp is not None:
+            range_alpha={
+                "state":"PENDING_ENTRY",
+                "cycle_id":rp.cycle_id,
+                "qty":rp.qty,
+                "partial_qty":float(getattr(rp,"partial_qty",0.0) or 0.0),
+                "limit_price":rp.limit_price,
+                "signal_price":rp.signal_price,
+                "expires_at_ms":rp.expires_at_ms,
+                "order_id":rp.order_id,
+                "client_order_id":rp.client_order_id,
+            }
+        range_diag=self._range_entry_diagnostic(market,include_micro=False)
+        range_diag["new_risk_enabled"]=bool(new_risk_enabled)
+        range_diag["fixed_qty"]=(
+            RANGE_ALPHA_QTY_BELOW_100K
+            if float(market["prices"][RANGE_ALPHA_SYMBOL]) < RANGE_ALPHA_PRICE_THRESHOLD
+            else RANGE_ALPHA_QTY_AT_OR_ABOVE_100K
+        )
         return {
             "strategy":STRATEGY_VERSION,
             "mode":"LIVE",
@@ -1903,12 +2824,15 @@ class StrategyV2LiveEngine:
                 for s in SYMBOLS
             },
             "flex":flex,
+            "range_alpha":range_alpha,
+            "range_alpha_diagnostic":range_diag,
             "pending":{
                 "trend":{
                     s:(asdict(p) if p else None)
                     for s,p in self.state.trend_pending.items()
                 },
                 "flex":asdict(self.state.flex_pending) if self.state.flex_pending else None,
+                "range":asdict(self.state.range_pending) if self.state.range_pending else None,
             },
             "events":events,
             "halted":self.state.halted,
