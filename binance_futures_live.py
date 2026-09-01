@@ -161,15 +161,20 @@ class BinanceFuturesLive:
             else:
                 send_params = params
 
+            method_u = method.upper()
             try:
                 resp = self.session.request(
-                    method.upper(),
+                    method_u,
                     self.base_url + path,
                     params=send_params,
                     timeout=timeout,
                 )
             except requests.RequestException:
-                if attempt + 1 >= max_retries:
+                # GET is read-only/idempotent, so a transport failure is safe
+                # to retry. POST/DELETE may already have reached Binance; do
+                # NOT automatically resend them here. Their callers resolve
+                # ambiguous order state via clientOrderId/order query.
+                if method_u != "GET" or attempt + 1 >= max_retries:
                     raise
                 time.sleep(min(10.0, 1.5 * (2 ** attempt)))
                 continue
@@ -196,8 +201,32 @@ class BinanceFuturesLive:
                     continue
 
                 msg = payload.get("msg") or resp.text[:500]
+
+                # Binance -1007 / HTTP 408 is a backend timeout. For GET
+                # requests there is no order to duplicate, so retrying is safe.
+                # The same applies to transient 5xx read failures.
+                # NEVER auto-retry POST/DELETE here: their execution status can
+                # be unknown and must be reconciled by order query.
+                safe_read_timeout = (
+                    method_u == "GET"
+                    and (
+                        resp.status_code == 408
+                        or code in (-1007, -1006)
+                        or 500 <= resp.status_code < 600
+                    )
+                )
+                if safe_read_timeout and attempt + 1 < max_retries:
+                    time.sleep(min(10.0, 1.5 * (2 ** attempt)))
+                    continue
+                if safe_read_timeout:
+                    raise BinanceLiveError(
+                        f"Binance READ {path} unavailable after "
+                        f"{max_retries} attempts: HTTP {resp.status_code}, "
+                        f"code={code}, msg={msg}"
+                    )
+
                 raise BinanceLiveError(
-                    f"Binance {method.upper()} {path} failed: "
+                    f"Binance {method_u} {path} failed: "
                     f"HTTP {resp.status_code}, code={code}, msg={msg}"
                 )
 
@@ -241,8 +270,28 @@ class BinanceFuturesLive:
     # --------------------------------------------------------
 
     def account(self) -> dict:
-        """Current USDⓈ-M account snapshot (V3)."""
-        return self.signed_get("/fapi/v3/account")
+        """Current USDⓈ-M account snapshot.
+
+        Prefer V3. If Binance's V3 account backend is temporarily unavailable
+        after safe GET retries, fall back to the still-supported V2 read
+        endpoint. Both are read-only and cannot create an order.
+        """
+        try:
+            return self._request(
+                "GET",
+                "/fapi/v3/account",
+                signed=True,
+                max_retries=3,
+            )
+        except BinanceLiveError as exc:
+            if "Binance READ /fapi/v3/account unavailable" not in str(exc):
+                raise
+            return self._request(
+                "GET",
+                "/fapi/v2/account",
+                signed=True,
+                max_retries=2,
+            )
 
     def account_v2(self) -> dict:
         """Account permission/config snapshot; V2 includes canTrade."""

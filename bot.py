@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from trade_discord_bridge import TradeDiscordBridge
 
-print("BOOT VERSION: 2026-08-30-strategy-v2.2-range-alpha-live1", flush=True)
+print("BOOT VERSION: 2026-09-02-strategy-v2.2-range-alpha-live1-read-timeout-hotfix1", flush=True)
 
 # =========================
 # 基本設定
